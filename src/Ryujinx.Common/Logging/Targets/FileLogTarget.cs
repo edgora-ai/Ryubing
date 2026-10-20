@@ -1,7 +1,7 @@
+using Ryujinx.Common.Configuration;
 using Ryujinx.Common.Logging.Formatters;
 using System;
 using System.IO;
-using System.Linq;
 
 namespace Ryujinx.Common.Logging.Targets
 {
@@ -22,61 +22,32 @@ namespace Ryujinx.Common.Logging.Targets
 
         public static FileStream PrepareLogFile(string path)
         {
-            // Ensure directory is present
-            DirectoryInfo logDir;
+            string selectedLogs = AppDataManager.ValidatePathWithinRoot(AppDataManager.LogsDirPath);
+            path = AppDataManager.ValidatePathWithinRoot(path);
+            if (!string.Equals(path, selectedLogs, OperatingSystem.IsMacOS() || OperatingSystem.IsWindows()
+                    ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
+            {
+                throw new IOException("File logging is restricted to the selected independent data directory's Logs folder.");
+            }
+
+            selectedLogs = AppDataManager.GetOrCreateLogsDir();
+            // Retain earlier runs rather than inspecting or deleting legacy logs. A unique exclusive leaf
+            // cannot append through a planted link or overwrite another run, and there is no shared fallback.
+            path = AppDataManager.ValidatePathWithinRoot(Path.Combine(selectedLogs,
+                $"{RyubingCanaryLocalPolicy.DataDirectoryName}_{ReleaseInformation.Version}_{DateTime.UtcNow:yyyy-MM-dd_HH-mm-ss}_{Guid.NewGuid():N}.log"));
             try
             {
-                logDir = new DirectoryInfo(path);
-            }
-            catch (ArgumentException exception)
-            {
-                Logger.Warning?.Print(LogClass.Application, $"Logging directory path ('{path}') was invalid: {exception}");
-
-                return null;
-            }
-
-            try
-            {
-                logDir.Create();
-            }
-            catch (IOException exception)
-            {
-                Logger.Warning?.Print(LogClass.Application, $"Logging directory could not be created '{logDir}': {exception}");
-
-                return null;
-            }
-
-            // Clean up old logs, should only keep 3
-            FileInfo[] files = logDir.GetFiles("*.log").OrderBy(info => info.CreationTime).ToArray();
-            for (int i = 0; i < files.Length - 2; i++)
-            {
-                try
+                FileStreamOptions options = new()
                 {
-                    files[i].Delete();
-                }
-                catch (UnauthorizedAccessException exception)
+                    Mode = FileMode.CreateNew,
+                    Access = FileAccess.Write,
+                    Share = FileShare.Read,
+                };
+                if (!OperatingSystem.IsWindows())
                 {
-                    Logger.Warning?.Print(LogClass.Application, $"Old log file could not be deleted '{files[i].FullName}': {exception}");
-
-                    return null;
+                    options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
                 }
-                catch (IOException exception)
-                {
-                    Logger.Warning?.Print(LogClass.Application, $"Old log file could not be deleted '{files[i].FullName}': {exception}");
-
-                    return null;
-                }
-            }
-
-            string version = ReleaseInformation.Version;
-            string appName = ReleaseInformation.IsCanaryBuild ? "Ryujinx_Canary" : "Ryujinx";
-
-            // Get path for the current time
-            path = Path.Combine(logDir.FullName, $"{appName}_{version}_{DateTime.Now:yyyy-MM-dd_HH-mm-ss}.log");
-
-            try
-            {
-                return File.Open(path, FileMode.Append, FileAccess.Write, FileShare.Read);
+                return new FileStream(path, options);
             }
             catch (UnauthorizedAccessException exception)
             {

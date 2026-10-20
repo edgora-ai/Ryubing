@@ -20,7 +20,6 @@ using Silk.NET.Vulkan;
 using System;
 using System.IO;
 using System.Text.Json;
-using System.Threading.Tasks;
 
 namespace Ryujinx.Headless
 {
@@ -31,16 +30,13 @@ namespace Ryujinx.Headless
             // Ensure Discord presence timestamp begins at the absolute start of when Ryujinx is launched
             DiscordIntegrationModule.EmulatorStartedAt = Timestamps.Now;
 
-            // Delete backup files after updating.
-            Task.Run(Updater.CleanupUpdate);
+            // Root selection must precede all services and inherited state.
+            AppDataManager.ValidatePathWithinRoot(AppDataManager.BaseDirPath);
 
             // Hook unhandled exception and process exit events.
             AppDomain.CurrentDomain.UnhandledException += (sender, e)
                 => Program.ProcessUnhandledException(sender, e.ExceptionObject as Exception, e.IsTerminating);
             AppDomain.CurrentDomain.ProcessExit += (_, _) => Program.Exit();
-
-            // Initialize the configuration.
-            ConfigurationState.Initialize();
 
             // Initialize Discord integration.
             DiscordIntegrationModule.Initialize();
@@ -127,18 +123,7 @@ namespace Ryujinx.Headless
             }
             else
             {
-                string profileBasePath;
-
-                if (isKeyboard)
-                {
-                    profileBasePath = Path.Combine(AppDataManager.ProfilesDirPath, "keyboard");
-                }
-                else
-                {
-                    profileBasePath = Path.Combine(AppDataManager.ProfilesDirPath, "controller");
-                }
-
-                string path = Path.Combine(profileBasePath, inputProfileName + ".json");
+                string path = AppDataManager.GetInputProfilePath(isKeyboard ? "keyboard" : "controller", inputProfileName);
 
                 if (!File.Exists(path))
                 {

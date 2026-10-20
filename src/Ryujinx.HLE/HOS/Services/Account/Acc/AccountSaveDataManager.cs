@@ -8,12 +8,15 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text.Json;
 
 namespace Ryujinx.HLE.HOS.Services.Account.Acc
 {
     public class AccountSaveDataManager
     {
-        private static readonly string _profilesJsonPath = Path.Join(AppDataManager.BaseDirPath, "system", "Profiles.json");
+        // Resolve at the access boundary, never when this type is first touched before root selection.
+        private static string ProfilesJsonPath => AppDataManager.ValidatePathWithinRoot(
+            Path.Join(AppDataManager.BaseDirPath, "system", "Profiles.json"));
 
         private static readonly ProfilesJsonSerializerContext _serializerContext = new(JsonHelper.GetDefaultSerializerOptions());
 
@@ -23,11 +26,11 @@ namespace Ryujinx.HLE.HOS.Services.Account.Acc
         {
             // TODO: Use 0x8000000000000010 system savedata instead of a JSON file if needed.
 
-            if (File.Exists(_profilesJsonPath))
+            if (File.Exists(ProfilesJsonPath))
             {
                 try
                 {
-                    ProfilesJson profilesJson = JsonHelper.DeserializeFromFile(_profilesJsonPath, _serializerContext.ProfilesJson);
+                    ProfilesJson profilesJson = JsonHelper.DeserializeFromFile(ProfilesJsonPath, _serializerContext.ProfilesJson);
 
                     foreach (UserProfileJson profile in profilesJson.Profiles)
                     {
@@ -38,9 +41,9 @@ namespace Ryujinx.HLE.HOS.Services.Account.Acc
 
                     LastOpened = new UserId(profilesJson.LastOpened);
                 }
-                catch (Exception ex)
+                catch (Exception ex) when (ex is JsonException or FormatException)
                 {
-                    Logger.Error?.Print(LogClass.Application, $"Failed to parse {_profilesJsonPath}: {ex.Message} Loading default profile!");
+                    Logger.Error?.Print(LogClass.Application, $"Failed to parse {ProfilesJsonPath}: {ex.Message} Loading default profile!");
 
                     LastOpened = AccountManager.DefaultUserId;
                 }
@@ -53,7 +56,17 @@ namespace Ryujinx.HLE.HOS.Services.Account.Acc
 
         public static Optional<UserProfile> GetLastUsedUser()
         {
-            ProfilesJson profilesJson = JsonHelper.DeserializeFromFile(_profilesJsonPath, _serializerContext.ProfilesJson);
+            string path = ProfilesJsonPath;
+            ProfilesJson profilesJson;
+            try
+            {
+                profilesJson = JsonHelper.DeserializeFromFile(path, _serializerContext.ProfilesJson);
+            }
+            catch (IOException exception) when (exception is FileNotFoundException or DirectoryNotFoundException)
+            {
+                // A fresh independent root has no last-used account. Do not consult any legacy profile.
+                return Optional<UserProfile>.None;
+            }
 
             return profilesJson.Profiles
                 .FindFirst(profile => profile.UserId == profilesJson.LastOpened)
@@ -82,7 +95,7 @@ namespace Ryujinx.HLE.HOS.Services.Account.Acc
                 });
             }
 
-            JsonHelper.SerializeToFile(_profilesJsonPath, profilesJson, _serializerContext.ProfilesJson);
+            JsonHelper.SerializeToFile(ProfilesJsonPath, profilesJson, _serializerContext.ProfilesJson);
         }
     }
 }

@@ -1,5 +1,11 @@
 ## Compilation
 
+> **This branch is Ryubing Canary Local.** For its pinned SDK, independent data directory,
+> focused tests and arm64-only package, follow [LOCAL_BUILD.md](docs/LOCAL_BUILD.md).
+> Do not use the inherited macOS universal release/PR wrappers: they perform cleanup and
+> are incompatible with the local packager. The remaining text is upstream background,
+> including its original clone and user-data locations, not this local branch's contract.
+
 Building the project is for users that want to contribute code only.
 If you wish to build the emulator yourself, follow these steps:
 

@@ -88,6 +88,11 @@ namespace Ryujinx.HLE.FileSystem
 
         public static string GetFullPath(string basePath, string fileName)
         {
+            if (string.IsNullOrEmpty(fileName))
+            {
+                return null;
+            }
+
             if (fileName.StartsWith("//"))
             {
                 fileName = fileName[2..];
@@ -101,14 +106,15 @@ namespace Ryujinx.HLE.FileSystem
                 return null;
             }
 
+            basePath = AppDataManager.ValidatePathWithinRoot(basePath);
             string fullPath = Path.GetFullPath(Path.Combine(basePath, fileName));
-
-            if (!fullPath.StartsWith(AppDataManager.BaseDirPath))
+            if (!RyubingCanaryLocalPolicy.IsWithin(basePath, fullPath, OperatingSystem.IsMacOS() || OperatingSystem.IsWindows()
+                    ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
             {
                 return null;
             }
 
-            return fullPath;
+            return AppDataManager.ValidatePathWithinRoot(fullPath);
         }
 
         internal static string GetSdCardPath() => MakeFullPath(AppDataManager.DefaultSdcardDir);
@@ -128,11 +134,19 @@ namespace Ryujinx.HLE.FileSystem
 
         public static string SystemPathToSwitchPath(string systemPath)
         {
-            string baseSystemPath = AppDataManager.BaseDirPath + Path.DirectorySeparatorChar;
-
-            if (systemPath.StartsWith(baseSystemPath))
+            if (string.IsNullOrWhiteSpace(systemPath) || !Path.IsPathFullyQualified(systemPath))
             {
-                string rawPath = systemPath.Replace(baseSystemPath, string.Empty);
+                return null;
+            }
+
+            string root = AppDataManager.ValidatePathWithinRoot(AppDataManager.BaseDirPath);
+            systemPath = RyubingCanaryLocalPolicy.Normalize(systemPath);
+            StringComparison comparison = OperatingSystem.IsMacOS() || OperatingSystem.IsWindows()
+                ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+            if (RyubingCanaryLocalPolicy.IsWithin(root, systemPath, comparison) && !string.Equals(root, systemPath, comparison))
+            {
+                AppDataManager.ValidatePathWithinRoot(systemPath);
+                string rawPath = Path.GetRelativePath(root, systemPath);
                 int firstSeparatorOffset = rawPath.IndexOf(Path.DirectorySeparatorChar);
 
                 if (firstSeparatorOffset == -1)
@@ -174,20 +188,15 @@ namespace Ryujinx.HLE.FileSystem
                     break;
             }
 
-            string fullPath = Path.Combine(AppDataManager.BaseDirPath, path);
-
-            if (isDirectory && !Directory.Exists(fullPath))
-            {
-                Directory.CreateDirectory(fullPath);
-            }
-
-            return fullPath;
+            string fullPath = AppDataManager.ValidatePathWithinRoot(Path.Combine(AppDataManager.BaseDirPath, path));
+            return isDirectory ? AppDataManager.GetOrCreateDirectory(fullPath) : fullPath;
         }
 
         public void InitializeFsServer(LibHac.Horizon horizon, out HorizonClient fsServerClient)
         {
+            AppDataManager.ValidateSelectedDataTree();
             LocalFileSystem serverBaseFs = new(useUnixTimeStamps: true);
-            Result result = serverBaseFs.Initialize(AppDataManager.BaseDirPath, LocalFileSystem.PathMode.DefaultCaseSensitivity, ensurePathExists: true);
+            Result result = serverBaseFs.Initialize(AppDataManager.ValidatePathWithinRoot(AppDataManager.BaseDirPath), LocalFileSystem.PathMode.DefaultCaseSensitivity, ensurePathExists: true);
             if (result.IsFailure())
             {
                 throw new HorizonResultException(result, "Error creating LocalFileSystem.");
@@ -228,19 +237,15 @@ namespace Ryujinx.HLE.FileSystem
             string consoleKeyFile = null;
             string devKeyFile = null;
 
-            if (AppDataManager.Mode == AppDataManager.LaunchMode.UserProfile)
-            {
-                LoadSetAtPath(AppDataManager.KeysDirPathUser);
-            }
-
-            LoadSetAtPath(AppDataManager.KeysDirPath);
+            // All four key files are read only from this build's selected system directory.
+            LoadSetAtPath(AppDataManager.ValidatePathWithinRoot(AppDataManager.KeysDirPath));
 
             void LoadSetAtPath(string basePath)
             {
-                string localProdKeyFile = Path.Combine(basePath, "prod.keys");
-                string localTitleKeyFile = Path.Combine(basePath, "title.keys");
-                string localConsoleKeyFile = Path.Combine(basePath, "console.keys");
-                string localDevKeyFile = Path.Combine(basePath, "dev.keys");
+                string localProdKeyFile = AppDataManager.ValidatePathWithinRoot(Path.Combine(basePath, "prod.keys"));
+                string localTitleKeyFile = AppDataManager.ValidatePathWithinRoot(Path.Combine(basePath, "title.keys"));
+                string localConsoleKeyFile = AppDataManager.ValidatePathWithinRoot(Path.Combine(basePath, "console.keys"));
+                string localDevKeyFile = AppDataManager.ValidatePathWithinRoot(Path.Combine(basePath, "dev.keys"));
 
                 if (File.Exists(localProdKeyFile))
                 {

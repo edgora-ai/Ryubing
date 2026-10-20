@@ -1361,7 +1361,8 @@ namespace Ryujinx.Ava.UI.ViewModels.Input
 
         private string GetProfilePath(string profileName)
         {
-            return Path.Combine(GetProfileBasePath(), profileName + ".json");
+            string profileType = CurrentDeviceType == DeviceType.Keyboard ? KeyboardString : ControllerString;
+            return AppDataManager.GetInputProfilePath(profileType, profileName);
         }
 
         private InputConfig LoadPreferredConfigurationForCurrentDevice()
@@ -1842,7 +1843,7 @@ namespace Ryujinx.Ava.UI.ViewModels.Input
                 path = Path.Combine(path, ControllerString);
             }
 
-            return path;
+            return AppDataManager.ValidatePathWithinRoot(path);
         }
 
         private void LoadProfiles()
@@ -1863,9 +1864,10 @@ namespace Ryujinx.Ava.UI.ViewModels.Input
 
                 ProfilesList.Add(GetCurrentProfileDefaultName());
 
-                foreach (string profile in Directory.GetFiles(basePath, "*.json", SearchOption.AllDirectories))
+                RyubingCanaryLocalPolicy.ValidateExistingTree(basePath);
+                foreach (string profile in Directory.GetFiles(basePath, "*.json", SearchOption.TopDirectoryOnly))
                 {
-                    ProfilesList.Add(Path.GetFileNameWithoutExtension(profile));
+                    ProfilesList.Add(Path.GetFileNameWithoutExtension(AppDataManager.ValidatePathWithinRoot(profile)));
                 }
 
                 string selectedProfile = GetBoundProfileNameForCurrentDevice();
@@ -2072,9 +2074,18 @@ namespace Ryujinx.Ava.UI.ViewModels.Input
             }
             else
             {
-                bool validFileName = ProfileName.IndexOfAny(Path.GetInvalidFileNameChars()) == -1;
+                string path = null;
+                try
+                {
+                    // Validate the new name before any rename/delete of an existing profile.
+                    path = GetProfilePath(ProfileName);
+                }
+                catch (ArgumentException exception)
+                {
+                    Logger.Warning?.Print(LogClass.Configuration, $"Invalid input profile name: {exception.Message}");
+                }
 
-                if (validFileName)
+                if (path != null)
                 {
                     // Delete old profile file if renaming (but keep default profile)
                     if (_originalProfileName != null && !string.Equals(ProfileName, _originalProfileName, StringComparison.Ordinal) && ProfilesList.Contains(_originalProfileName))
@@ -2091,8 +2102,6 @@ namespace Ryujinx.Ava.UI.ViewModels.Input
                             ReplaceBoundProfileName(_originalProfileName, ProfileName);
                         }
                     }
-
-                    string path = GetProfilePath(ProfileName);
 
                     InputConfig config = IsKeyboard
                         ? (ConfigViewModel as KeyboardInputViewModel)?.Config.GetConfig()

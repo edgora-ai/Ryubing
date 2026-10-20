@@ -16,6 +16,7 @@ using Ryujinx.Ava.UI.Views.Dialog;
 using Ryujinx.Ava.UI.Windows;
 using Ryujinx.Ava.Utilities;
 using Ryujinx.Common;
+using Ryujinx.Common.Configuration;
 using Ryujinx.Common.Logging;
 using Ryujinx.Graphics.RenderDocApi;
 using System;
@@ -32,7 +33,7 @@ namespace Ryujinx.Ava
                 ? $"{FullAppName}{(includeVersion ? $" {Program.Version}" : string.Empty)}"
                 : $"{FullAppName}{(includeVersion ? $" {Program.Version}" : string.Empty)} - {LocaleManager.Instance[windowTitleKey.Value]}";
 
-        public static readonly string FullAppName = string.Intern(ReleaseInformation.IsCanaryBuild ? "Ryujinx Canary" : "Ryujinx");
+        public static readonly string FullAppName = RyubingCanaryLocalPolicy.DisplayName;
 
         public static MainWindow MainWindow => Current!
             .ApplicationLifetime.Cast<IClassicDesktopStyleApplicationLifetime>()
@@ -64,12 +65,8 @@ namespace Ryujinx.Ava
             this.AttachDeveloperTools(options => options.Gesture = new KeyGesture(Key.F12, KeyModifiers.Control));
 #endif
 
-            if (OperatingSystem.IsMacOS())
-            {
-                // Switches macOS key held behavior to repeat the input key instead of showing the character accents menu (like doing on an iOS keyboard would).
-                // https://macos-defaults.com/keyboard/applepressandholdenabled.html
-                Process.Start("/usr/bin/defaults", "write org.ryujinx.Ryujinx ApplePressAndHoldEnabled -bool false");
-            }
+            // Keep macOS preferences untouched; this independent build must not write the shared
+            // org.ryujinx.Ryujinx domain or change the user's key-repeat/accent settings.
         }
 
         public override void OnFrameworkInitializationCompleted()

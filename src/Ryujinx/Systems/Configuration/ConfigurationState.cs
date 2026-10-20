@@ -194,7 +194,7 @@ namespace Ryujinx.Ava.Systems.Configuration
             System.UseInputGlobalConfig.Value = false;
             System.EnableDockedMode.Value = true;
             EnableDiscordIntegration.Value = true;
-            UpdateCheckerType.Value = UpdaterType.PromptAtStartup;
+            UpdateCheckerType.Value = UpdaterType.Off;
             FocusLostActionType.Value = FocusLostType.DoNothing;
             ShowConfirmExit.Value = true;
             RememberWindowState.Value = true;

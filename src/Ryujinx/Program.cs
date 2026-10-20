@@ -8,6 +8,7 @@ using Optris.Icons.Avalonia.MaterialDesign;
 using Ryujinx.Ava.Systems;
 using Ryujinx.Ava.Systems.Configuration;
 using Ryujinx.Ava.Systems.Configuration.System;
+using Ryujinx.Ava.UI;
 using Ryujinx.Ava.UI.Helpers;
 using Ryujinx.Ava.UI.Windows;
 using Ryujinx.Ava.Utilities;
@@ -48,6 +49,22 @@ namespace Ryujinx.Ava
 
         [STAThread]
         public static int Main(string[] args)
+        {
+            try
+            {
+                // Reject malformed roots and legacy/link aliases before platform/native checks or any writer.
+                string requestedRoot = CommandLineState.GetRequestedDataRoot(args);
+                RyubingCanaryLocalPolicy.ResolveDataRoot(requestedRoot, RyubingCanaryLocalPolicy.PathEnvironment.Current());
+                return MainCore(args);
+            }
+            catch (Exception exception) when (exception is ArgumentException or IOException or UnauthorizedAccessException)
+            {
+                Console.Error.WriteLine($"{RyubingCanaryLocalPolicy.DisplayName} startup failed: {exception.Message}");
+                return 1;
+            }
+        }
+
+        private static int MainCore(string[] args)
         {
             Version = ReleaseInformation.Version;
 
@@ -180,8 +197,7 @@ namespace Ryujinx.Ava
 
             if (noGuiArg)
             {
-                HeadlessRyujinx.Entrypoint(args);
-                return 0;
+                return HeadlessRyujinx.Entrypoint(args);
             }
 
             Initialize(args);
@@ -198,6 +214,7 @@ namespace Ryujinx.Ava
         public static AppBuilder BuildAvaloniaApp() =>
             AppBuilder.Configure<RyujinxApp>()
                 .UsePlatformDetect()
+                .With(UiFontPolicy.CreateFontManagerOptions())
                 
                 // Vulkan UI rendering performs better, but its unpolished, and as such it lacks effective transparency.
                 // https://github.com/AvaloniaUI/Avalonia/issues/19378
@@ -229,21 +246,28 @@ namespace Ryujinx.Ava
             return found;
         }
 
+        public static void InitializeDataRoot(string[] args, RyubingCanaryLocalPolicy.PathEnvironment environment = null,
+            RyubingCanaryLocalPolicy.IDataRootFileSystem fileSystem = null)
+        {
+            CommandLineState.ParseArguments(args);
+            AppDataManager.Initialize(CommandLineState.BaseDirPathArg,
+                environment ?? RyubingCanaryLocalPolicy.PathEnvironment.Current(),
+                fileSystem ?? RyubingCanaryLocalPolicy.PhysicalDataRootFileSystem.Instance);
+            CommandLineState.PinResolvedDataRoot();
+        }
+
         private static void Initialize(string[] args)
         {
+            // Root selection and validation precede configuration, accounts, services and persistent logging.
+            InitializeDataRoot(args);
+
             // Ensure Discord presence timestamp begins at the absolute start of when Ryujinx is launched
             DiscordIntegrationModule.EmulatorStartedAt = Timestamps.Now;
-
-            // Parse arguments
-            CommandLineState.ParseArguments(args);
 
             if (OperatingSystem.IsMacOS())
             {
                 MVKInitialization.InitializeResolver();
             }
-
-            // Delete backup files after updating.
-            Task.Run(Updater.CleanupUpdate);
 
             Console.Title = $"{RyujinxApp.FullAppName} Console {Version}";
 
@@ -253,9 +277,6 @@ namespace Ryujinx.Ava
             TaskScheduler.UnobservedTaskException += (sender, e)
                 => ProcessUnhandledException(sender, e.Exception, false);
             AppDomain.CurrentDomain.ProcessExit += (_, _) => Exit();
-
-            // Setup base data directory.
-            AppDataManager.Initialize(CommandLineState.BaseDirPathArg);
 
             // Initialize the configuration.
             ConfigurationState.Initialize();
@@ -280,12 +301,9 @@ namespace Ryujinx.Ava
             DriverUtilities.InitDriverConfig(ConfigurationState.Instance.Graphics.BackendThreading == BackendThreading.Off);
 
             // Check if keys exists.
-            if (!File.Exists(Path.Combine(AppDataManager.KeysDirPath, "prod.keys")))
+            if (!File.Exists(AppDataManager.ValidatePathWithinRoot(Path.Combine(AppDataManager.KeysDirPath, "prod.keys"))))
             {
-                if (!(AppDataManager.Mode == AppDataManager.LaunchMode.UserProfile && File.Exists(Path.Combine(AppDataManager.KeysDirPathUser, "prod.keys"))))
-                {
-                    MainWindow.ShowKeyErrorOnLoad = true;
-                }
+                MainWindow.ShowKeyErrorOnLoad = true;
             }
 
             if (CommandLineState.LaunchPathArg != null)
@@ -301,7 +319,7 @@ namespace Ryujinx.Ava
                 return "";
             }
 
-            string gameDir = Path.Combine(AppDataManager.GamesDirPath, gameId, ReleaseInformation.ConfigName);
+            string gameDir = AppDataManager.GetTitleConfigurationPath(gameId, ReleaseInformation.ConfigName);
 
             if (changeFolderForGame)
             {
@@ -315,52 +333,38 @@ namespace Ryujinx.Ava
         public static void ReloadConfig(bool isRunGameWithCustomConfig = false)
         {
 
-            string localConfigurationPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, ReleaseInformation.ConfigName);
-            string appDataConfigurationPath = Path.Combine(AppDataManager.BaseDirPath, ReleaseInformation.ConfigName);
-
-
-            if (!isRunGameWithCustomConfig) // To return settings from the game folder if the user configuration exists
+            GlobalConfigurationPath = AppDataManager.GetGlobalConfigurationPath(ReleaseInformation.ConfigName);
+            if (!isRunGameWithCustomConfig)
             {
-                // Now load the configuration as the other subsystems are now registered
-                if (File.Exists(localConfigurationPath))
-                {
-                    ConfigurationPath = localConfigurationPath;
-                }
-                else if (File.Exists(appDataConfigurationPath))
-                {
-                    ConfigurationPath = appDataConfigurationPath;
-                }
-            }
-
-            if (ConfigurationPath == null)
-            {
-                // No configuration, we load the default values and save it to disk
-                ConfigurationPath = appDataConfigurationPath;
-                Logger.Notice.Print(LogClass.Application, $"No configuration file found. Saving default configuration to: {ConfigurationPath}");
-
-                ConfigurationState.Instance.LoadDefault();
-                ConfigurationState.Instance.ToFileFormat().SaveConfig(ConfigurationPath);
+                ConfigurationPath = GlobalConfigurationPath;
+                UseExtraConfig = false;
             }
             else
             {
-                Logger.Notice.Print(LogClass.Application, $"Loading configuration from: {ConfigurationPath}");
-
-                if (ConfigurationFileFormat.TryLoad(ConfigurationPath, out ConfigurationFileFormat configurationFileFormat))
-                {
-                    ConfigurationState.Instance.Load(configurationFileFormat, ConfigurationPath);
-                }
-                else
-                {
-                    Logger.Warning?.PrintMsg(LogClass.Application, $"Failed to load config! Loading the default config instead.\nFailed config location: {ConfigurationPath}");
-
-                    ConfigurationFileFormat.RenameInvalidConfigFile(ConfigurationPath);
-
-                    ConfigurationState.Instance.LoadDefault();
-                }
+                ConfigurationPath = AppDataManager.ValidatePathWithinRoot(ConfigurationPath ?? GlobalConfigurationPath);
             }
 
-            // When you first load the program, copy to remember the path for the global configuration
-            GlobalConfigurationPath ??= ConfigurationPath;
+            // Only the selected root is an authority. Executable-adjacent and legacy configurations are ignored.
+            if (ConfigurationFileFormat.TryLoad(ConfigurationPath, out ConfigurationFileFormat configurationFileFormat))
+            {
+                Logger.Notice.Print(LogClass.Application, $"Loading configuration from: {ConfigurationPath}");
+                ConfigurationState.Instance.Load(configurationFileFormat, ConfigurationPath);
+            }
+            else
+            {
+                bool invalidFileExists = File.Exists(ConfigurationPath);
+                if (invalidFileExists)
+                {
+                    ConfigurationFileFormat.RenameInvalidConfigFile(ConfigurationPath);
+                }
+
+                ConfigurationState.Instance.LoadDefault();
+                if (invalidFileExists || ConfigurationPath == GlobalConfigurationPath)
+                {
+                    Logger.Notice.Print(LogClass.Application, $"Saving default configuration to: {ConfigurationPath}");
+                    ConfigurationState.Instance.ToFileFormat().SaveConfig(ConfigurationPath);
+                }
+            }
 
             UseHardwareAcceleration = ConfigurationState.Instance.EnableHardwareAcceleration;
 

@@ -188,3 +188,20 @@ PublishProfiles/
 # Ignore distribution build files
 distribution/macos/temp/
 distribution/macos/output/
+
+# Independent local-build outputs and private runtime inputs
+__pycache__/
+*.py[cod]
+*.app/
+packaging-manifest.json
+artifacts/
+.local-records/
+Config.json
+Config.*.json
+*.keys
+*.nupkg
+*.xci
+*.nsp
+*.xcz
+*.nsz
+*.nca

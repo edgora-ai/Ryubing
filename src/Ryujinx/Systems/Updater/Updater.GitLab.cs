@@ -20,6 +20,8 @@ namespace Ryujinx.Ava.Systems
 
         private static async Task<Return<VersionResponse>> QueryLatestVersionAsync()
         {
+            RequireAutomaticUpdates();
+
             _updateClient ??= UpdateClient.Builder()
                 .WithServerEndpoint("https://update.ryujinx.app") // This is the default, and doesn't need to be provided; it's here for transparency.
                 .WithLogger((format, args, caller) => 
@@ -57,6 +59,12 @@ namespace Ryujinx.Ava.Systems
 
         public static async Task<Optional<(Version Current, Version Incoming)>> CheckVersionAsync(bool showVersionUpToDate = false)
         {
+            if (!AutomaticUpdatesEnabled)
+            {
+                ReportUpdatesDisabled();
+                return default; // Disabled/no result, not an "up to date" result or network check.
+            }
+
             if (!Version.TryParse(Program.Version, out Version currentVersion))
             {
                 Logger.Error?.Print(LogClass.Application,

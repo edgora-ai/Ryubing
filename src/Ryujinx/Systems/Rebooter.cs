@@ -1,5 +1,7 @@
 using FluentAvalonia.UI.Controls;
 using Ryujinx.Ava.Common.Locale;
+using Ryujinx.Ava.Utilities;
+using Ryujinx.Common.Configuration;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -10,8 +12,6 @@ namespace Ryujinx.Ava.Systems
 {
     internal static class Rebooter
     {
-
-        private static readonly string _updateDir = Path.Combine(Path.GetTempPath(), "Ryujinx", "update");
 
         public static void RebootAppWithGame(string gamePath, List<string> args)
         {
@@ -48,13 +48,14 @@ namespace Ryujinx.Ava.Systems
                     ryuName = OperatingSystem.IsWindows() ? "Ryujinx.exe" : "Ryujinx";
                 }
 
-                ProcessStartInfo processStart = new(ryuName)
+                ProcessStartInfo processStart = new(Path.Combine(executableDirectory, ryuName))
                 {
-                    UseShellExecute = true,
+                    UseShellExecute = false,
                     WorkingDirectory = executableDirectory,
                 };
 
-                foreach (string arg in args)
+                string root = AppDataManager.ValidatePathWithinRoot(AppDataManager.BaseDirPath);
+                foreach (string arg in CommandLineState.BuildRestartArguments(args, root))
                 {
                     processStart.ArgumentList.Add(arg);
                 }

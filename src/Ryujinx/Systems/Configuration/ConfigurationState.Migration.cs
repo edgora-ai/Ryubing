@@ -21,34 +21,36 @@ namespace Ryujinx.Ava.Systems.Configuration
 {
     public partial class ConfigurationState
     {
-        public void Load(ConfigurationFileFormat cff, string configurationFilePath, string titleId = "")
+        public void Load(ConfigurationFileFormat cff, string configurationFilePath, string titleId = "",
+            ConfigurationFileFormat.IConfigurationFileSystem fileSystem = null)
         {
-            bool configurationFileUpdated = false;
+            ArgumentNullException.ThrowIfNull(cff);
+            configurationFilePath = AppDataManager.ValidatePathWithinRoot(configurationFilePath);
+            fileSystem ??= ConfigurationFileFormat.PhysicalConfigurationFileSystem.Instance;
+            bool configurationFileUpdated = cff.Version < ConfigurationFileFormat.CurrentVersion;
             bool shouldLoadFromFile = string.IsNullOrEmpty(titleId);
 
-            if (cff.Version is < 0 or > ConfigurationFileFormat.CurrentVersion)
+            if (cff.Version is <= 0 or > ConfigurationFileFormat.CurrentVersion)
             {
                 RyuLogger.Warning?.Print(LogClass.Application, $"Unsupported configuration version {cff.Version}, loading default.");
 
-                ConfigurationFileFormat.RenameInvalidConfigFile(configurationFilePath);
+                ConfigurationFileFormat.RenameInvalidConfigFile(configurationFilePath, fileSystem);
 
                 LoadDefault();
                 return;
             }
 
-            foreach ((int newVersion, Action<ConfigurationFileFormat> migratorFunction)
-                     in _migrations.OrderBy(x => x.Key))
+            if (configurationFileUpdated)
             {
-                if (cff.Version >= newVersion)
-                    continue;
-
-                RyuLogger.Warning?.Print(LogClass.Application,
-                    $"Outdated configuration version {cff.Version}, migrating to version {newVersion}.");
-
-                migratorFunction(cff);
-
-                configurationFileUpdated = true;
+                ConfigurationFileFormat.CreateMigrationBackup(configurationFilePath, cff.Version, fileSystem);
             }
+
+            // Preserve the caller's parsed values, including nested controller configuration, while applying
+            // exactly the Canary migration table below. No newer fork's schema or migration is imported.
+            cff = MigrateConfiguration(cff);
+            cff.GraphicsShadersDumpPath = string.IsNullOrWhiteSpace(cff.GraphicsShadersDumpPath)
+                ? string.Empty
+                : AppDataManager.ValidatePathWithinRoot(cff.GraphicsShadersDumpPath);
 
 
             EnableDiscordIntegration.Value = cff.EnableDiscordIntegration;
@@ -221,11 +223,37 @@ namespace Ryujinx.Ava.Systems.Configuration
 
             if (configurationFileUpdated || didPathUpdate)
             {
-                ToFileFormat().SaveConfig(configurationFilePath);
+                ToFileFormat().SaveConfig(configurationFilePath, fileSystem);
 
                 if (configurationFileUpdated)
                     RyuLogger.Notice.Print(LogClass.Application, $"Configuration file updated to version {ConfigurationFileFormat.CurrentVersion}");
             }
+        }
+
+        /// <summary>Applies only this Canary's original ordered migrations to an independent copy.</summary>
+        public static ConfigurationFileFormat MigrateConfiguration(ConfigurationFileFormat source)
+        {
+            ArgumentNullException.ThrowIfNull(source);
+            if (source.Version is <= 0 or > ConfigurationFileFormat.CurrentVersion)
+            {
+                throw new InvalidDataException($"Unsupported configuration version {source.Version}.");
+            }
+
+            ConfigurationFileFormat migrated = source.DeepClone();
+            foreach ((int newVersion, Action<ConfigurationFileFormat> migratorFunction) in _migrations.OrderBy(x => x.Key))
+            {
+                if (source.Version >= newVersion)
+                {
+                    continue;
+                }
+
+                RyuLogger.Warning?.Print(LogClass.Application,
+                    $"Outdated configuration version {source.Version}, migrating to version {newVersion}.");
+                migratorFunction(migrated);
+            }
+
+            migrated.Version = ConfigurationFileFormat.CurrentVersion;
+            return migrated;
         }
 
         private static readonly Dictionary<int, Action<ConfigurationFileFormat>> _migrations =

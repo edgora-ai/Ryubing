@@ -9,6 +9,7 @@ using Ryujinx.HLE;
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Text.Json;
 
 namespace Ryujinx.Ava.Systems.Configuration
 {
@@ -517,70 +518,171 @@ namespace Ryujinx.Ava.Systems.Configuration
         public bool PauseEmulationWhileScanningAmiibo { get; set; }
 
         /// <summary>
-        /// Loads a configuration file from disk
+        /// Configuration-only persistence boundary. Commit must atomically replace an existing destination
+        /// from a sibling staging file, or fail without changing the destination.
         /// </summary>
-        /// <param name="path">The path to the JSON configuration file</param>
-        /// <param name="configurationFileFormat">Parsed configuration file</param>
-        public static bool TryLoad(string path, out ConfigurationFileFormat configurationFileFormat)
+        public interface IConfigurationFileSystem
         {
+            Stream OpenRead(string path);
+            Stream CreateNew(string path);
+            void Flush(Stream stream);
+            void Commit(string temporaryPath, string destinationPath);
+            void Delete(string path);
+        }
+
+        public sealed class PhysicalConfigurationFileSystem : IConfigurationFileSystem
+        {
+            public static PhysicalConfigurationFileSystem Instance { get; } = new();
+            public Stream OpenRead(string path) => File.OpenRead(path);
+            public Stream CreateNew(string path) => new FileStream(path, FileMode.CreateNew, FileAccess.Write,
+                FileShare.None, 4096, FileOptions.WriteThrough);
+
+            public void Flush(Stream stream)
+            {
+                if (stream is FileStream file)
+                {
+                    file.Flush(flushToDisk: true);
+                }
+                else
+                {
+                    stream.Flush();
+                }
+            }
+
+            public void Commit(string temporaryPath, string destinationPath)
+            {
+                if (File.Exists(destinationPath))
+                {
+                    // Do not fall back to delete/copy/truncate on filesystems without atomic replacement.
+                    File.Replace(temporaryPath, destinationPath, destinationBackupFileName: null);
+                }
+                else
+                {
+                    File.Move(temporaryPath, destinationPath, overwrite: false);
+                }
+            }
+
+            public void Delete(string path) => File.Delete(path);
+        }
+
+        /// <summary>
+        /// Missing optional files and malformed JSON return false. Policy, permission and unrelated IO failures
+        /// propagate, preventing an unreadable configuration from being replaced with defaults.
+        /// </summary>
+        public static bool TryLoad(string path, out ConfigurationFileFormat configurationFileFormat) =>
+            TryLoad(path, PhysicalConfigurationFileSystem.Instance, out configurationFileFormat);
+
+        public static bool TryLoad(string path, IConfigurationFileSystem fileSystem, out ConfigurationFileFormat configurationFileFormat)
+        {
+            ArgumentNullException.ThrowIfNull(fileSystem);
+            path = AppDataManager.ValidatePathWithinRoot(path);
             try
             {
-                configurationFileFormat = JsonHelper.DeserializeFromFile(path, ConfigurationFileFormatSettings.SerializerContext.ConfigurationFileFormat);
-
-                return configurationFileFormat.Version != 0;
+                using Stream input = fileSystem.OpenRead(path);
+                configurationFileFormat = JsonSerializer.Deserialize(input, ConfigurationFileFormatSettings.SerializerContext.ConfigurationFileFormat);
+                return configurationFileFormat != null && configurationFileFormat.Version > 0;
             }
-            catch
+            catch (IOException exception) when (exception is FileNotFoundException or DirectoryNotFoundException)
             {
                 configurationFileFormat = null;
-
+                return false;
+            }
+            catch (JsonException exception)
+            {
+                Logger.Warning?.PrintMsg(LogClass.Configuration, $"Invalid configuration JSON at '{path}': {exception.Message}");
+                configurationFileFormat = null;
                 return false;
             }
         }
 
-        /// <summary>
-        /// Renames the configuration file when it is deemed invalid
-        /// </summary>
-        /// <param name="path">The path to the invalid JSON configuration file</param>
-        /// <returns>The path of the renamed invalid JSON configuration file, or null if the rename failed</returns>
-        public static string RenameInvalidConfigFile(string path)
-        {
-            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
-            {
-                return null;
-            }
+        public ConfigurationFileFormat DeepClone() => JsonHelper.Deserialize(
+            JsonHelper.Serialize(this, ConfigurationFileFormatSettings.SerializerContext.ConfigurationFileFormat),
+            ConfigurationFileFormatSettings.SerializerContext.ConfigurationFileFormat)
+            ?? throw new InvalidDataException("Configuration could not be cloned.");
 
+        /// <summary>Preserves the exact original bytes beside this configuration before migration.</summary>
+        public static string CreateMigrationBackup(string path, int sourceVersion, IConfigurationFileSystem fileSystem = null) =>
+            CopyToBackup(path, $"v{sourceVersion}.bak", fileSystem ?? PhysicalConfigurationFileSystem.Instance);
+
+        /// <summary>
+        /// Compatibility name: copy, rather than move, the invalid source. It remains in place until a successful
+        /// atomic replacement. Preservation failures propagate instead of silently discarding the source.
+        /// </summary>
+        public static string RenameInvalidConfigFile(string path, IConfigurationFileSystem fileSystem = null)
+        {
+            string preservedPath = CopyToBackup(path, "invalid", fileSystem ?? PhysicalConfigurationFileSystem.Instance);
+            Logger.Warning?.PrintMsg(LogClass.Application, $"Invalid configuration preserved at: {preservedPath}");
+            return preservedPath;
+        }
+
+        private static string CopyToBackup(string path, string suffix, IConfigurationFileSystem fileSystem)
+        {
+            path = AppDataManager.ValidatePathWithinRoot(path);
+            string backup = AppDataManager.ValidatePathWithinRoot($"{path}.{DateTime.UtcNow:yyyyMMddTHHmmssfffffffZ}.{Guid.NewGuid():N}.{suffix}");
+            using Stream input = fileSystem.OpenRead(path);
+            bool created = false;
             try
             {
-                string directory = Path.GetDirectoryName(path) ?? string.Empty;
-                string originalFileName = Path.GetFileName(path);
-                if (string.IsNullOrWhiteSpace(originalFileName))
-                {
-                    return null;
-                }
-                string renamedFileName = $"{originalFileName}.{DateTime.Now:yyyy-MM-dd_HH-mm-ss}.invalid";
-                string renamedPath = string.IsNullOrEmpty(directory) ? renamedFileName : Path.Combine(directory, renamedFileName);
-
-                File.Move(path, renamedPath, overwrite: false);
-
-                Logger.Warning?.PrintMsg(LogClass.Application, $"Invalid configuration renamed to: {renamedPath}");
-
-                return renamedPath;
+                using Stream output = fileSystem.CreateNew(backup);
+                created = true;
+                input.CopyTo(output);
+                fileSystem.Flush(output);
+                return backup;
             }
-            catch (Exception ex)
+            catch (Exception backupException)
             {
-                Logger.Error?.PrintMsg(LogClass.Application, $"Failed to rename invalid configuration file \"{path}\": {ex}");
-
-                return null;
+                if (created)
+                {
+                    DeleteIncompleteFile(backup, fileSystem, backupException);
+                }
+                throw;
             }
         }
 
-        /// <summary>
-        /// Save a configuration file to disk
-        /// </summary>
-        /// <param name="path">The path to the JSON configuration file</param>
-        public void SaveConfig(string path)
+        /// <summary>Unique sibling staging and atomic commit preserve the previous file on save failure.</summary>
+        public void SaveConfig(string path) => SaveConfig(path, PhysicalConfigurationFileSystem.Instance);
+
+        public void SaveConfig(string path, IConfigurationFileSystem fileSystem)
         {
-            JsonHelper.SerializeToFile(path, this, ConfigurationFileFormatSettings.SerializerContext.ConfigurationFileFormat);
+            ArgumentNullException.ThrowIfNull(fileSystem);
+            path = AppDataManager.ValidatePathWithinRoot(path);
+            string temporary = AppDataManager.ValidatePathWithinRoot(Path.Combine(Path.GetDirectoryName(path),
+                $".{Path.GetFileName(path)}.{Guid.NewGuid():N}.tmp"));
+            bool created = false;
+            try
+            {
+                using (Stream output = fileSystem.CreateNew(temporary))
+                {
+                    created = true;
+                    JsonSerializer.Serialize(output, this, ConfigurationFileFormatSettings.SerializerContext.ConfigurationFileFormat);
+                    fileSystem.Flush(output);
+                }
+
+                AppDataManager.ValidatePathWithinRoot(path);
+                AppDataManager.ValidatePathWithinRoot(temporary);
+                fileSystem.Commit(temporary, path);
+            }
+            catch (Exception saveException)
+            {
+                if (created)
+                {
+                    DeleteIncompleteFile(temporary, fileSystem, saveException);
+                }
+                throw;
+            }
+        }
+
+        private static void DeleteIncompleteFile(string path, IConfigurationFileSystem fileSystem, Exception originalException)
+        {
+            try
+            {
+                fileSystem.Delete(AppDataManager.ValidatePathWithinRoot(path));
+            }
+            catch (Exception cleanupException)
+            {
+                throw new AggregateException($"Configuration persistence failed and staging cleanup also failed: '{path}'.",
+                    originalException, cleanupException);
+            }
         }
     }
 }

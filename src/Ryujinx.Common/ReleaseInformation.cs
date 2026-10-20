@@ -3,16 +3,19 @@ using System.Reflection;
 
 namespace Ryujinx.Common
 {
-    // DO NOT EDIT, filled by CI
+    // Pinned independent local build; do not replace these values with upstream CI placeholders.
     public static class ReleaseInformation
     {
         private const string CanaryChannel = "canary";
         private const string ReleaseChannel = "release";
 
-        private const string BuildVersion = "%%RYUJINX_BUILD_VERSION%%";
-        private const string BuildGitHash = "%%RYUJINX_BUILD_GIT_HASH%%";
-        private const string ReleaseChannelName = "%%RYUJINX_TARGET_RELEASE_CHANNEL_NAME%%";
-        private const string ConfigFileName = "%%RYUJINX_CONFIG_FILE_NAME%%";
+        private const string BuildVersion = "1.3.351";
+        private const string BuildGitHash = "475615f0431b4995b03c930c5089d20f6f3570e0";
+        private const string ReleaseChannelName = CanaryChannel;
+        private const string ConfigFileName = "Config.json";
+
+        public const string LocalBuildMarker = "ryubing-canary-local+475615f.local1";
+        public static string SourceRevision => BuildGitHash;
 
         public static string ConfigName => !ConfigFileName.StartsWith("%%") ? ConfigFileName : "Config.json";
 

@@ -1,20 +1,14 @@
-using Ryujinx.Common.Logging;
-using Ryujinx.Common.Utilities;
 using System;
 using System.IO;
-using System.Runtime.Versioning;
+using static Ryujinx.Common.Configuration.RyubingCanaryLocalPolicy;
 
 namespace Ryujinx.Common.Configuration
 {
     public static class AppDataManager
     {
-        private const string DefaultBaseDir = "Ryujinx";
-        private const string DefaultPortableDir = "portable";
-
-        // The following 3 are always part of Base Directory
-        private const string GamesDir = "games";
-        private const string ProfilesDir = "profiles";
-        private const string KeysDir = "system";
+        private static IDataRootFileSystem _fileSystem;
+        private static string _customModsPath;
+        private static string _customSdModsPath;
 
         public enum LaunchMode
         {
@@ -24,305 +18,148 @@ namespace Ryujinx.Common.Configuration
         }
 
         public static LaunchMode Mode { get; private set; }
-
         public static string BaseDirPath { get; private set; }
         public static string GamesDirPath { get; private set; }
         public static string ProfilesDirPath { get; private set; }
         public static string KeysDirPath { get; private set; }
-        public static string KeysDirPathUser { get; }
-
         public static string LogsDirPath { get; private set; }
+
+        // Compatibility for callers displaying the keys directory; never discovers ~/.switch.
+        public static string KeysDirPathUser => KeysDirPath;
 
         public const string DefaultNandDir = "bis";
         public const string DefaultSdcardDir = "sdcard";
-        private const string DefaultModsDir = "mods";
 
-        public static string CustomModsPath { get; set; }
-        public static string CustomSdModsPath { get; set; }
-        public static string CustomNandPath { get; set; } // TODO: Actually implement this into VFS
-        public static string CustomSdCardPath { get; set; } // TODO: Actually implement this into VFS
-
-        static AppDataManager()
+        public static string CustomModsPath
         {
-            KeysDirPathUser = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".switch");
+            get => _customModsPath;
+            set => _customModsPath = string.IsNullOrWhiteSpace(value) ? null : ValidatePathWithinRoot(value);
         }
 
-        public static void Initialize(string baseDirPath)
+        public static string CustomSdModsPath
         {
-            string appDataPath = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-
-            if (appDataPath.Length == 0)
-            {
-                appDataPath = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-            }
-
-            string userProfilePath = Path.Combine(appDataPath, DefaultBaseDir);
-            string portablePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, DefaultPortableDir);
-
-            // On macOS, check for a portable directory next to the app bundle as well.
-            if (OperatingSystem.IsMacOS() && !Directory.Exists(portablePath))
-            {
-                string bundlePath = Path.GetFullPath(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", ".."));
-                // Make sure we're actually running within an app bundle.
-                if (bundlePath.EndsWith(".app"))
-                {
-                    portablePath = Path.GetFullPath(Path.Combine(bundlePath, "..", DefaultPortableDir));
-                }
-            }
-
-            if (Directory.Exists(portablePath))
-            {
-                BaseDirPath = portablePath;
-                Mode = LaunchMode.Portable;
-            }
-            else
-            {
-                BaseDirPath = userProfilePath;
-                Mode = LaunchMode.UserProfile;
-            }
-
-            if (baseDirPath != null && baseDirPath != userProfilePath)
-            {
-                if (!Directory.Exists(baseDirPath))
-                {
-                    Logger.Error?.Print(LogClass.Application, $"Custom Data Directory '{baseDirPath}' does not exist. Falling back to {Mode}...");
-                }
-                else
-                {
-                    BaseDirPath = baseDirPath;
-                    Mode = LaunchMode.Custom;
-                }
-            }
-
-            BaseDirPath = Path.GetFullPath(BaseDirPath); // convert relative paths
-
-            if (IsPathSymlink(BaseDirPath))
-            {
-                Logger.Warning?.Print(LogClass.Application, "Application data directory is a symlink. This may be unintended.");
-            }
-
-            SetupBasePaths();
+            get => _customSdModsPath;
+            set => _customSdModsPath = string.IsNullOrWhiteSpace(value) ? null : ValidatePathWithinRoot(value);
         }
 
-        public static string GetOrCreateLogsDir()
+        public static void Initialize(string baseDirPath) => Initialize(baseDirPath, PathEnvironment.Current(), PhysicalDataRootFileSystem.Instance);
+
+        /// <summary>
+        /// Nothing is published to services until all checks succeed. A rejected explicit root cannot
+        /// leave a previous/default root active, and all existing-tree checks precede the first write.
+        /// </summary>
+        public static void Initialize(string baseDirPath, PathEnvironment environment, IDataRootFileSystem fileSystem)
         {
-            if (Directory.Exists(LogsDirPath))
+            ArgumentNullException.ThrowIfNull(fileSystem);
+            BaseDirPath = GamesDirPath = ProfilesDirPath = KeysDirPath = LogsDirPath = null;
+            Mode = LaunchMode.UserProfile;
+            _fileSystem = null;
+            _customModsPath = _customSdModsPath = null;
+
+            DataRootSelection selection = ResolveDataRoot(baseDirPath, environment, fileSystem);
+            string root = selection.Path;
+            ValidateExistingTree(root, fileSystem);
+            string[] directories = ["Logs", "games", "profiles", "system", DefaultNandDir, DefaultSdcardDir];
+            foreach (string directory in directories)
             {
-                return LogsDirPath;
+                string path = ValidateContainedPath(root, Path.Combine(root, directory), fileSystem);
+                if (fileSystem.GetPathKind(path) is not (PathKind.Missing or PathKind.Directory))
+                {
+                    throw new IOException($"The data directory entry must be a directory: '{path}'.");
+                }
             }
 
-            Logger.Notice.Print(LogClass.Application, "Logging directory not found; attempting to create new logging directory.");
-            LogsDirPath = SetUpLogsDir();
+            string existingDirectory = root;
+            while (fileSystem.GetPathKind(existingDirectory) == PathKind.Missing)
+            {
+                existingDirectory = Path.GetDirectoryName(existingDirectory)
+                    ?? throw new IOException($"No writable parent exists for the selected data directory: '{root}'.");
+            }
 
-            return LogsDirPath;
+            fileSystem.VerifyDirectoryWritable(existingDirectory);
+            fileSystem.CreateDirectory(root);
+            foreach (string directory in directories)
+            {
+                string path = ValidateContainedPath(root, Path.Combine(root, directory), fileSystem);
+                fileSystem.CreateDirectory(path);
+            }
+            ValidateExistingTree(root, fileSystem);
+            fileSystem.VerifyDirectoryWritable(root);
+
+            _fileSystem = fileSystem;
+            Mode = selection.Mode;
+            BaseDirPath = root;
+            LogsDirPath = Path.Combine(root, "Logs");
+            GamesDirPath = Path.Combine(root, "games");
+            ProfilesDirPath = Path.Combine(root, "profiles");
+            KeysDirPath = Path.Combine(root, "system");
         }
 
-        private static string SetUpLogsDir()
+        /// <summary>
+        /// Revalidates selected-root data immediately before access; never resolves links or falls back.
+        /// </summary>
+        public static string ValidatePathWithinRoot(string path)
         {
-            string logDir = string.Empty;
-
-            if (Mode == LaunchMode.Portable)
+            if (BaseDirPath == null || _fileSystem == null)
             {
-                logDir = Path.Combine(BaseDirPath, "Logs");
-                try
-                {
-                    Directory.CreateDirectory(logDir);
-                }
-                catch
-                {
-                    Logger.Warning?.Print(LogClass.Application, $"Logging directory could not be created '{logDir}'");
-
-                    return null;
-                }
-            }
-            else
-            {
-                if (OperatingSystem.IsMacOS())
-                {
-                    // NOTE: Should evaluate to "~/Library/Logs/Ryujinx/".
-                    logDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Library", "Logs", DefaultBaseDir);
-                    try
-                    {
-                        Directory.CreateDirectory(logDir);
-                    }
-                    catch
-                    {
-                        Logger.Warning?.Print(LogClass.Application, $"Logging directory could not be created '{logDir}'");
-                        logDir = string.Empty;
-                    }
-
-                    if (string.IsNullOrEmpty(logDir))
-                    {
-                        // NOTE: Should evaluate to "~/Library/Application Support/Ryujinx/Logs".
-                        logDir = Path.Combine(BaseDirPath, "Logs");
-
-                        try
-                        {
-                            Directory.CreateDirectory(logDir);
-                        }
-                        catch
-                        {
-                            Logger.Warning?.Print(LogClass.Application, $"Logging directory could not be created '{logDir}'");
-
-                            return null;
-                        }
-                    }
-                }
-                else if (OperatingSystem.IsWindows())
-                {
-                    // NOTE: Should evaluate to a "Logs" directory in whatever directory Ryujinx was launched from.
-                    logDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Logs");
-                    try
-                    {
-                        Directory.CreateDirectory(logDir);
-                    }
-                    catch
-                    {
-                        Logger.Warning?.Print(LogClass.Application, $"Logging directory could not be created '{logDir}'");
-                        logDir = string.Empty;
-                    }
-
-                    if (string.IsNullOrEmpty(logDir))
-                    {
-                        // NOTE: Should evaluate to "C:\Users\user\AppData\Roaming\Ryujinx\Logs".
-                        logDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), DefaultBaseDir, "Logs");
-
-                        try
-                        {
-                            Directory.CreateDirectory(logDir);
-                        }
-                        catch
-                        {
-                            Logger.Warning?.Print(LogClass.Application, $"Logging directory could not be created '{logDir}'");
-
-                            return null;
-                        }
-                    }
-                }
-                else if (OperatingSystem.IsLinux())
-                {
-                    // NOTE: Should evaluate to "~/.config/Ryujinx/Logs".
-                    logDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), DefaultBaseDir, "Logs");
-
-                    try
-                    {
-                        Directory.CreateDirectory(logDir);
-                    }
-                    catch
-                    {
-                        Logger.Warning?.Print(LogClass.Application, $"Logging directory could not be created '{logDir}'");
-
-                        return null;
-                    }
-                }
+                throw new InvalidOperationException("The independent data directory has not been successfully initialized.");
             }
 
-            return logDir;
+            return ValidateContainedPath(BaseDirPath, path, _fileSystem);
         }
 
-        private static void SetupBasePaths()
+        public static void ValidateSelectedDataTree() => ValidateExistingTree(ValidatePathWithinRoot(BaseDirPath), _fileSystem);
+
+        public static string GetOrCreateDirectory(string path)
         {
-            Directory.CreateDirectory(BaseDirPath);
-            LogsDirPath = SetUpLogsDir();
-            Directory.CreateDirectory(GamesDirPath = Path.Combine(BaseDirPath, GamesDir));
-            Directory.CreateDirectory(ProfilesDirPath = Path.Combine(BaseDirPath, ProfilesDir));
-            Directory.CreateDirectory(KeysDirPath = Path.Combine(BaseDirPath, KeysDir));
+            path = ValidatePathWithinRoot(path);
+            if (_fileSystem.GetPathKind(path) is not (PathKind.Missing or PathKind.Directory))
+            {
+                throw new IOException($"The data entry must be a directory: '{path}'.");
+            }
+            _fileSystem.CreateDirectory(path);
+            return ValidatePathWithinRoot(path);
         }
 
-        // Check if existing old baseDirPath is a symlink, to prevent possible errors.
-        // Should be removed, when the existence of the old directory isn't checked anymore.
-        private static bool IsPathSymlink(string path)
+        public static string GetOrCreateLogsDir() => GetOrCreateDirectory(LogsDirPath);
+
+        public static string GetGlobalConfigurationPath(string configurationName) =>
+            ValidatePathWithinRoot(RyubingCanaryLocalPolicy.GetGlobalConfigurationPath(BaseDirPath, configurationName, _fileSystem));
+
+        public static string GetTitleConfigurationPath(string titleId, string configurationName) =>
+            ValidatePathWithinRoot(RyubingCanaryLocalPolicy.GetTitleConfigurationPath(BaseDirPath, titleId, configurationName, _fileSystem));
+
+        public static string GetInputProfilePath(string profileType, string profileName)
         {
-            try
+            if (profileType is not ("keyboard" or "controller"))
             {
-                FileAttributes attributes = File.GetAttributes(path);
-                return (attributes & FileAttributes.ReparsePoint) == FileAttributes.ReparsePoint;
+                throw new ArgumentException("A profile type must be 'keyboard' or 'controller'.", nameof(profileType));
             }
-            catch
+            if (string.IsNullOrWhiteSpace(profileName) || profileName is "." or ".." || Path.IsPathRooted(profileName) ||
+                profileName.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 || profileName.Contains('/') ||
+                profileName.Contains('\\') || profileName.Contains(':') || profileName.TrimEnd(' ', '.') != profileName)
             {
-                return false;
+                throw new ArgumentException("A profile name must be a single nonempty file-name stem.", nameof(profileName));
             }
+            foreach (char character in profileName)
+            {
+                if (char.IsControl(character))
+                {
+                    throw new ArgumentException("A profile name must not contain control characters.", nameof(profileName));
+                }
+            }
+
+            return ValidatePathWithinRoot(Path.Combine(ProfilesDirPath, profileType, profileName + ".json"));
         }
 
-        [SupportedOSPlatform("macos")]
+        // Legacy schema migration calls this method. This independent build must never move old data,
+        // resolve/rewrite an old symlink, or discover a legacy macOS configuration directory.
         public static void FixMacOSConfigurationFolders()
         {
-            string oldConfigPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-                ".config", DefaultBaseDir);
-            if (Path.Exists(oldConfigPath) && !IsPathSymlink(oldConfigPath) && !Path.Exists(BaseDirPath))
-            {
-                FileSystemUtils.MoveDirectory(oldConfigPath, BaseDirPath);
-                Directory.CreateSymbolicLink(oldConfigPath, BaseDirPath);
-            }
-
-            string correctApplicationDataDirectoryPath =
-                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), DefaultBaseDir);
-            if (IsPathSymlink(correctApplicationDataDirectoryPath))
-            {
-                //copy the files somewhere temporarily
-                string tempPath = Path.Combine(Path.GetTempPath(), DefaultBaseDir);
-                try
-                {
-                    FileSystemUtils.CopyDirectory(correctApplicationDataDirectoryPath, tempPath, true);
-                }
-                catch (Exception exception)
-                {
-                    Logger.Error?.Print(LogClass.Application,
-                        $"Critical error copying Ryujinx application data into the temp folder. {exception}");
-                    try
-                    {
-                        FileSystemInfo resolvedDirectoryInfo =
-                            Directory.ResolveLinkTarget(correctApplicationDataDirectoryPath, true);
-                        string resolvedPath = resolvedDirectoryInfo.FullName;
-                        Logger.Error?.Print(LogClass.Application, $"Please manually move your Ryujinx data from {resolvedPath} to {correctApplicationDataDirectoryPath}, and remove the symlink.");
-                    }
-                    catch (Exception symlinkException)
-                    {
-                        Logger.Error?.Print(LogClass.Application, $"Unable to resolve the symlink for Ryujinx application data: {symlinkException}. Follow the symlink at {correctApplicationDataDirectoryPath} and move your data back to the Application Support folder.");
-                    }
-
-                    return;
-                }
-
-                //delete the symlink
-                try
-                {
-                    //This will fail if this is an actual directory, so there is no way we can actually delete user data here.
-                    File.Delete(correctApplicationDataDirectoryPath);
-                }
-                catch (Exception exception)
-                {
-                    Logger.Error?.Print(LogClass.Application,
-                        $"Critical error deleting the Ryujinx application data folder symlink at {correctApplicationDataDirectoryPath}. {exception}");
-                    try
-                    {
-                        FileSystemInfo resolvedDirectoryInfo =
-                            Directory.ResolveLinkTarget(correctApplicationDataDirectoryPath, true);
-                        string resolvedPath = resolvedDirectoryInfo.FullName;
-                        Logger.Error?.Print(LogClass.Application, $"Please manually move your Ryujinx data from {resolvedPath} to {correctApplicationDataDirectoryPath}, and remove the symlink.");
-                    }
-                    catch (Exception symlinkException)
-                    {
-                        Logger.Error?.Print(LogClass.Application, $"Unable to resolve the symlink for Ryujinx application data: {symlinkException}. Follow the symlink at {correctApplicationDataDirectoryPath} and move your data back to the Application Support folder.");
-                    }
-
-                    return;
-                }
-
-                //put the files back
-                try
-                {
-                    FileSystemUtils.CopyDirectory(tempPath, correctApplicationDataDirectoryPath, true);
-                }
-                catch (Exception exception)
-                {
-                    Logger.Error?.Print(LogClass.Application,
-                        $"Critical error copying Ryujinx application data into the correct location. {exception}. Please manually move your application data from {tempPath} to {correctApplicationDataDirectoryPath}.");
-                }
-            }
+            // Intentionally disabled: initialization owns only the selected independent root.
         }
 
-        public static string GetModsPath() => CustomModsPath ?? Directory.CreateDirectory(Path.Combine(BaseDirPath, DefaultModsDir)).FullName;
-        public static string GetSdModsPath() => CustomSdModsPath ?? Directory.CreateDirectory(Path.Combine(BaseDirPath, DefaultSdcardDir, "atmosphere")).FullName;
+        public static string GetModsPath() => GetOrCreateDirectory(_customModsPath ?? Path.Combine(BaseDirPath, "mods"));
+        public static string GetSdModsPath() => GetOrCreateDirectory(_customSdModsPath ?? Path.Combine(BaseDirPath, DefaultSdcardDir, "atmosphere"));
     }
 }

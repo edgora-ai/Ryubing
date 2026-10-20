@@ -1,5 +1,7 @@
 using Gommon;
+using Ryujinx.Common.Configuration;
 using Ryujinx.Common.Logging;
+using System;
 using System.Collections.Generic;
 
 namespace Ryujinx.Ava.Utilities
@@ -30,8 +32,70 @@ namespace Ryujinx.Ava.Utilities
         public static bool HideAvailableUpdates { get; private set; }
         public static bool OnlyLocalAmiibo { get; private set; }
 
+        public static string GetRequestedDataRoot(string[] args)
+        {
+            RyubingCanaryLocalPolicy.ValidateRootArguments(args);
+            for (int index = 0; index < args.Length; index++)
+            {
+                if (args[index] is "-r" or "--root-data-dir")
+                {
+                    return args[index + 1];
+                }
+            }
+            return null;
+        }
+
+        public static string[] BuildRestartArguments(IEnumerable<string> arguments, string resolvedRoot)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(resolvedRoot);
+            if (!System.IO.Path.IsPathFullyQualified(resolvedRoot))
+            {
+                throw new ArgumentException("Restarts require the resolved absolute data root.", nameof(resolvedRoot));
+            }
+            string[] source = [.. arguments];
+            RyubingCanaryLocalPolicy.ValidateRootArguments(source);
+            List<string> result = ["--root-data-dir", RyubingCanaryLocalPolicy.Normalize(resolvedRoot)];
+            for (int index = 0; index < source.Length; index++)
+            {
+                if (source[index] is "-r" or "--root-data-dir")
+                {
+                    index++;
+                    continue;
+                }
+                result.Add(source[index]);
+            }
+            return result.ToArray();
+        }
+
+        public static void PinResolvedDataRoot()
+        {
+            string root = AppDataManager.ValidatePathWithinRoot(AppDataManager.BaseDirPath);
+            Arguments = BuildRestartArguments(Arguments ?? [], root);
+            BaseDirPathArg = root;
+        }
+
         public static void ParseArguments(string[] args)
         {
+            RyubingCanaryLocalPolicy.ValidateRootArguments(args);
+            CountArguments = 0;
+            BaseDirPathArg = null;
+            OverrideDockedMode = null;
+            OverrideHardwareAcceleration = null;
+            OverrideGraphicsBackend = null;
+            OverrideBackendThreading = null;
+            OverrideBackendThreadingAfterReboot = null;
+            OverridePPTC = null;
+            OverrideMemoryManagerMode = null;
+            OverrideSystemRegion = null;
+            OverrideSystemLanguage = null;
+            OverrideHideCursor = null;
+            FirmwareToInstallPathArg = default;
+            Profile = null;
+            LaunchPathArg = null;
+            LaunchApplicationId = null;
+            StartFullscreenArg = false;
+            HideAvailableUpdates = false;
+            OnlyLocalAmiibo = false;
             List<string> arguments = [];
 
             // Parse Arguments.

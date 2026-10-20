@@ -50,124 +50,146 @@ namespace Ryujinx.Headless
 
         private static readonly InputConfigJsonSerializerContext _serializerContext = new(JsonHelper.GetDefaultSerializerOptions());
 
-        public static void Entrypoint(string[] args)
+        public static int Entrypoint(string[] args)
         {
-            // Make process DPI aware for proper window sizing on high-res screens.
+            try
+            {
+                RyubingCanaryLocalPolicy.ValidateRootArguments(args);
+                return Parser.Default.ParseArguments<Options>(args).MapResult(
+                    options =>
+                    {
+                        Load(args, options);
+                        return 0;
+                    },
+                    errors =>
+                    {
+                        CommandLine.Error[] failures = errors.ToArray();
+                        if (failures.All(error => error.Tag is ErrorType.HelpRequestedError or ErrorType.VersionRequestedError))
+                        {
+                            return 0;
+                        }
+                        Console.Error.WriteLine("Error parsing headless command-line arguments:");
+                        foreach (CommandLine.Error error in failures)
+                        {
+                            Console.Error.WriteLine($" - {error.Tag}");
+                        }
+                        return 1;
+                    });
+            }
+            catch (Exception exception) when (exception is ArgumentException or IOException or UnauthorizedAccessException)
+            {
+                Console.Error.WriteLine($"{RyubingCanaryLocalPolicy.DisplayName} headless startup failed: {exception.Message}");
+                return 1;
+            }
+        }
+
+        /// <summary>Shared production preflight, deliberately before native backends, logging and services.</summary>
+        public static void InitializeDataRootAndConfiguration(string[] args, Options option,
+            RyubingCanaryLocalPolicy.PathEnvironment environment = null,
+            RyubingCanaryLocalPolicy.IDataRootFileSystem fileSystem = null)
+        {
+            RyubingCanaryLocalPolicy.ValidateRootArguments(args);
+            ArgumentNullException.ThrowIfNull(option);
+            AppDataManager.Initialize(option.BaseDataDir,
+                environment ?? RyubingCanaryLocalPolicy.PathEnvironment.Current(),
+                fileSystem ?? RyubingCanaryLocalPolicy.PhysicalDataRootFileSystem.Instance);
+            option.BaseDataDir = AppDataManager.BaseDirPath;
+
+            string[] profileNames = [option.InputProfile1Name, option.InputProfile2Name, option.InputProfile3Name,
+                option.InputProfile4Name, option.InputProfile5Name, option.InputProfile6Name, option.InputProfile7Name,
+                option.InputProfile8Name, option.InputProfileHandheldName];
+            foreach (string name in profileNames.Where(name => name != null && name != "default"))
+            {
+                AppDataManager.GetInputProfilePath("keyboard", name);
+                AppDataManager.GetInputProfilePath("controller", name);
+            }
+            option.GraphicsShadersDumpPath = string.IsNullOrWhiteSpace(option.GraphicsShadersDumpPath)
+                ? string.Empty
+                : AppDataManager.ValidatePathWithinRoot(option.GraphicsShadersDumpPath);
+
+            if (ConfigurationState.Instance == null)
+            {
+                ConfigurationState.Initialize();
+            }
+            ReloadConfig();
+
+            bool useLastUsedProfile = false;
+            if (option.InheritConfig)
+            {
+                option.InheritMainConfig(args, ConfigurationState.Instance, out useLastUsedProfile);
+            }
+            if (useLastUsedProfile && AccountSaveDataManager.GetLastUsedUser().TryGet(out UserProfile profile))
+            {
+                option.UserProfile = profile.Name;
+            }
+            if (!option.DisableMainInputConfig)
+            {
+                option.InheritMainConfigInput(args, ConfigurationState.Instance);
+            }
+        }
+
+        private static void InitializePlatform()
+        {
             ForceDpiAware.Windows();
-
             Console.Title = $"HeadlessRyujinx Console {Program.Version}";
-
             if (OperatingSystem.IsMacOS() || OperatingSystem.IsLinux())
             {
                 AutoResetEvent invoked = new(false);
-
-                // MacOS must perform SDL polls from the main thread.
                 SDL3Driver.MainThreadDispatcher = action =>
                 {
                     invoked.Reset();
-
                     WindowBase.QueueMainThreadAction(() =>
                     {
                         action();
-
                         invoked.Set();
                     });
-
                     invoked.WaitOne();
                 };
             }
-
             if (OperatingSystem.IsMacOS())
             {
                 MVKInitialization.InitializeResolver();
             }
-
-            Parser.Default.ParseArguments<Options>(args)
-                .WithParsed(options => Load(args, options))
-                .WithNotParsed(errors =>
-                {
-                    Logger.Error?.PrintMsg(LogClass.Application, "Error parsing command-line arguments:");
-
-                    errors.ForEach(err => Logger.Error?.PrintMsg(LogClass.Application, $" - {err.Tag}"));
-                });
         }
 
         public static void ReloadConfig(string customConfigPath = null)
         {
-            string localConfigurationPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, ReleaseInformation.ConfigName);
-            string appDataConfigurationPath = Path.Combine(AppDataManager.BaseDirPath, ReleaseInformation.ConfigName);
+            string configurationPath = customConfigPath == null
+                ? AppDataManager.GetGlobalConfigurationPath(ReleaseInformation.ConfigName)
+                : AppDataManager.ValidatePathWithinRoot(customConfigPath);
 
-            string configurationPath = null;
-
-            // Now load the configuration as the other subsystems are now registered
-            if (customConfigPath != null && File.Exists(customConfigPath))
+            if (ConfigurationFileFormat.TryLoad(configurationPath, out ConfigurationFileFormat configurationFileFormat))
             {
-                configurationPath = customConfigPath;
-            }
-            else if (File.Exists(localConfigurationPath))
-            {
-                configurationPath = localConfigurationPath;
-            }
-            else if (File.Exists(appDataConfigurationPath))
-            {
-                configurationPath = appDataConfigurationPath;
-            }
-
-            if (configurationPath == null)
-            {
-                // No configuration, we load the default values and save it to disk
-                configurationPath = appDataConfigurationPath;
-                Logger.Notice.Print(LogClass.Application, $"No configuration file found. Saving default configuration to: {configurationPath}");
-
-                ConfigurationState.Instance.LoadDefault();
-                ConfigurationState.Instance.ToFileFormat().SaveConfig(configurationPath);
+                Logger.Notice.Print(LogClass.Application, $"Loading configuration from: {configurationPath}");
+                ConfigurationState.Instance.Load(configurationFileFormat, configurationPath);
             }
             else
             {
-                Logger.Notice.Print(LogClass.Application, $"Loading configuration from: {configurationPath}");
-
-                if (ConfigurationFileFormat.TryLoad(configurationPath, out ConfigurationFileFormat configurationFileFormat))
+                bool invalidFileExists = File.Exists(configurationPath);
+                if (invalidFileExists)
                 {
-                    ConfigurationState.Instance.Load(configurationFileFormat, configurationPath);
+                    ConfigurationFileFormat.RenameInvalidConfigFile(configurationPath);
                 }
-                else
+                ConfigurationState.Instance.LoadDefault();
+                if (invalidFileExists || customConfigPath == null)
                 {
-                    Logger.Warning?.PrintMsg(LogClass.Application, $"Failed to load config! Loading the default config instead.\nFailed config location: {configurationPath}");
-
-                    ConfigurationState.Instance.LoadDefault();
+                    Logger.Notice.Print(LogClass.Application, $"Saving default configuration to: {configurationPath}");
+                    ConfigurationState.Instance.ToFileFormat().SaveConfig(configurationPath);
                 }
             }
         }
 
         static void Load(string[] originalArgs, Options option)
         {
+            InitializeDataRootAndConfiguration(originalArgs, option);
+            InitializePlatform();
             Initialize();
 
-            bool useLastUsedProfile = false;
-
-            if (option.InheritConfig)
+            // All keys are selected-root only; never probe ~/.switch.
+            if (!File.Exists(AppDataManager.ValidatePathWithinRoot(Path.Combine(AppDataManager.KeysDirPath, "prod.keys"))))
             {
-                option.InheritMainConfig(originalArgs, ConfigurationState.Instance, out useLastUsedProfile);
+                Logger.Error?.Print(LogClass.Application, "Keys not found in the selected data root");
             }
-
-            AppDataManager.Initialize(option.BaseDataDir);
-
-            if (useLastUsedProfile && AccountSaveDataManager.GetLastUsedUser().TryGet(out UserProfile profile))
-                option.UserProfile = profile.Name;
-
-            // Check if keys exists.
-            if (!File.Exists(Path.Combine(AppDataManager.KeysDirPath, "prod.keys")))
-            {
-                if (!(AppDataManager.Mode == AppDataManager.LaunchMode.UserProfile && File.Exists(Path.Combine(AppDataManager.KeysDirPathUser, "prod.keys"))))
-                {
-                    Logger.Error?.Print(LogClass.Application, "Keys not found");
-                }
-            }
-
-            ReloadConfig();
-
-            if (!option.DisableMainInputConfig)
-                option.InheritMainConfigInput(originalArgs, ConfigurationState.Instance);
 
             _virtualFileSystem = VirtualFileSystem.CreateInstance();
             _libHacHorizonManager = new LibHacHorizonManager();
@@ -275,7 +297,7 @@ namespace Ryujinx.Headless
                 }
                 else
                 {
-                    Logger.Error?.Print(LogClass.Application, "No writable log directory available. Make sure either the Logs directory, Application Data, or the Ryujinx directory is writable.");
+                    Logger.Error?.Print(LogClass.Application, "No writable log file is available within the selected data root.");
                 }
             }
 

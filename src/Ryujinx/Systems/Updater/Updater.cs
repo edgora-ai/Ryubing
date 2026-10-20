@@ -40,8 +40,32 @@ namespace Ryujinx.Ava.Systems
 
         private static readonly string[] _windowsDependencyDirs = [];
         
+        // Independent local builds never consume official release artifacts. This runtime policy
+        // also applies when DISABLE_UPDATER was accidentally omitted from a caller's build flags.
+        private static bool AutomaticUpdatesEnabled => false;
+
+        internal const string DisabledReason =
+            "Ryubing Canary Local is a local developer build; automatic updates are disabled. " +
+            "Rebuild and install manually from reviewed source.";
+
+        private static void ReportUpdatesDisabled() => Logger.Info?.Print(LogClass.Application, DisabledReason);
+
+        private static void RequireAutomaticUpdates([CallerMemberName] string operation = null)
+        {
+            if (!AutomaticUpdatesEnabled)
+            {
+                throw new NotSupportedException($"{DisabledReason} Rejected operation: {operation}.");
+            }
+        }
+
         public static async Task BeginUpdateAsync(bool showVersionUpToDate = false)
         {
+            if (!AutomaticUpdatesEnabled)
+            {
+                ReportUpdatesDisabled();
+                return;
+            }
+
             if (_running)
             {
                 return;
@@ -102,6 +126,8 @@ namespace Ryujinx.Ava.Systems
 
         private static HttpClient ConstructHttpClient()
         {
+            RequireAutomaticUpdates();
+
             HttpClient result = new();
 
             // Required by GitHub to interact with APIs.
@@ -112,6 +138,8 @@ namespace Ryujinx.Ava.Systems
 
         private static async Task UpdateRyujinx(string downloadUrl)
         {
+            RequireAutomaticUpdates();
+
             _updateSuccessful = false;
 
             // Empty update dir, although it shouldn't ever have anything inside it
@@ -241,6 +269,8 @@ namespace Ryujinx.Ava.Systems
 
         private static void DoUpdateWithMultipleThreads(FATaskDialog taskDialog, string downloadUrl, string updateFile)
         {
+            RequireAutomaticUpdates();
+
             // Multi-Threaded Updater
             long chunkSize = _buildSize / _connectionCount;
             long remainderChunk = _buildSize % _connectionCount;
@@ -359,6 +389,8 @@ namespace Ryujinx.Ava.Systems
 
         private static void DoUpdateWithSingleThreadWorker(FATaskDialog taskDialog, string downloadUrl, string updateFile)
         {
+            RequireAutomaticUpdates();
+
             using HttpClient client = new();
             // We do not want to timeout while downloading
             client.Timeout = TimeSpan.FromDays(1);
@@ -400,6 +432,8 @@ namespace Ryujinx.Ava.Systems
 
         private static void DoUpdateWithSingleThread(FATaskDialog taskDialog, string downloadUrl, string updateFile)
         {
+            RequireAutomaticUpdates();
+
             Thread worker = new(() => DoUpdateWithSingleThreadWorker(taskDialog, downloadUrl, updateFile))
             {
                 Name = "Updater.SingleThreadWorker",
@@ -412,6 +446,8 @@ namespace Ryujinx.Ava.Systems
         [SupportedOSPlatform("macos")]
         private static void ExtractTarGzipFile(string archivePath, string outputDirectoryPath)
         {
+            RequireAutomaticUpdates();
+
             using FileStream inStream = File.OpenRead(archivePath);
             using GZipStream gzipStream = new(inStream, CompressionMode.Decompress);
             
@@ -422,6 +458,8 @@ namespace Ryujinx.Ava.Systems
         [SupportedOSPlatform("macos")]
         private static void ExtractTarXzipFile(string archivePath, string outputDirectoryPath)
         {
+            RequireAutomaticUpdates();
+
             using FileStream inStream = File.OpenRead(archivePath);
             using XZStream gzipStream = new(inStream);
             
@@ -430,17 +468,23 @@ namespace Ryujinx.Ava.Systems
 
         private static void ExtractZipFile(string archivePath, string outputDirectoryPath)
         {
+            RequireAutomaticUpdates();
+
             ZipFile.ExtractToDirectory(archivePath, outputDirectoryPath);
         }
         
         private static void Extract7ZipFile(string archivePath, string outputDirectoryPath)
         {
+            RequireAutomaticUpdates();
+
             IArchive archive = ArchiveFactory.OpenArchive(archivePath);
             archive.WriteToDirectory(outputDirectoryPath);
         }
 
         private static void InstallUpdate(FATaskDialog taskDialog, string updateFile)
         {
+            RequireAutomaticUpdates();
+
             // Extract Update
             taskDialog.SubHeader = LocaleManager.Instance[LocaleKeys.UpdaterExtracting];
             taskDialog.SetProgressBarState(0, FATaskDialogProgressState.Normal);
@@ -511,6 +555,16 @@ namespace Ryujinx.Ava.Systems
 
         public static bool CanUpdate(bool showWarnings = false)
         {
+            if (!AutomaticUpdatesEnabled)
+            {
+                if (showWarnings)
+                {
+                    ReportUpdatesDisabled();
+                }
+
+                return false;
+            }
+
 #if !DISABLE_UPDATER
             if (!NetworkInterface.GetIsNetworkAvailable())
             {
@@ -558,6 +612,8 @@ namespace Ryujinx.Ava.Systems
         // NOTE: This method should always reflect the latest build layout.
         private static IEnumerable<string> EnumerateFilesToDelete()
         {
+            RequireAutomaticUpdates();
+
             IEnumerable<string> files = Directory.EnumerateFiles(_homeDir); // All files directly in base dir.
 
             // Determine and exclude user files only when the updater is running, not when cleaning old files
@@ -589,6 +645,8 @@ namespace Ryujinx.Ava.Systems
 
         private static void MoveAllFilesOver(string root, string dest, FATaskDialog taskDialog)
         {
+            RequireAutomaticUpdates();
+
             int total = Directory.GetFiles(root, "*", SearchOption.AllDirectories).Length;
             foreach (string directory in Directory.GetDirectories(root))
             {
@@ -616,9 +674,11 @@ namespace Ryujinx.Ava.Systems
             }
         }
 
-        public static void CleanupUpdate() =>
-            Directory.GetFiles(_homeDir, "*.ryuold", SearchOption.AllDirectories)
-                .ForEach(File.Delete);
+        public static void CleanupUpdate()
+        {
+            // Intentionally no-op: local builds never create update leftovers and must not scan
+            // or delete installation files, including .ryuold files owned by another build.
+        }
 
         private static string BuildPlatformExtension()
         {

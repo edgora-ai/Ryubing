@@ -1,3 +1,23 @@
+# Ryubing Canary Local
+
+> **Independent local-source variant, not an official release.** This branch is based on
+> Ryubing Canary **1.3.351**, upstream revision
+> [`475615f0431b4995b03c930c5089d20f6f3570e0`](https://github.com/SorkoPiko/Ryubing/commit/475615f0431b4995b03c930c5089d20f6f3570e0).
+> The local modifications are identified by this fork's commit history, not by the upstream
+> revision alone. Upstream release badges and documentation below are retained for attribution
+> and background; their update/distribution instructions do not apply to this branch.
+
+- [修改记录与验证边界](docs/LOCAL_CHANGES.zh-CN.md)
+- [Local build and focused-test instructions](docs/LOCAL_BUILD.md)
+- [macOS packaging, coexistence and update policy](distribution/macos/README.local.md)
+
+The app uses an independent identity and data root. It does not import keys, firmware,
+accounts, saves or configuration from another installation. Automatic updater replacement
+is disabled. Installed Chinese-UI/settings-save/restart acceptance remains incomplete;
+automated checks are not game, motion, rumble, notarization or release-readiness acceptance.
+
+---
+
 <table align="center">
     <tr>
         <td align="center" width="25%">

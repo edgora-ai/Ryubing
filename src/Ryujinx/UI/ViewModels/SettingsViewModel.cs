@@ -857,7 +857,9 @@ namespace Ryujinx.Ava.UI.ViewModels
             }
 
             config.Graphics.BackendThreading.Value = (BackendThreading)GraphicsBackendMultithreadingIndex;
-            config.Graphics.ShadersDumpPath.Value = ShaderDumpPath;
+            config.Graphics.ShadersDumpPath.Value = string.IsNullOrWhiteSpace(ShaderDumpPath)
+                ? string.Empty
+                : AppDataManager.ValidatePathWithinRoot(ShaderDumpPath);
 
             // Audio
             AudioBackend audioBackend = (AudioBackend)AudioBackend;
@@ -902,7 +904,7 @@ namespace Ryujinx.Ava.UI.ViewModels
             config.Hacks.DisableNifmIsAnyInternetRequestAccepted.Value =
                 DirtyHacks.NifmDisableIsAnyInternetRequestAccepted;
 
-            config.ToFileFormat().SaveConfig(Program.ConfigurationPath);
+            SaveConfiguration(config, global);
 
             MainWindow.UpdateGraphicsConfig();
             RyujinxApp.MainWindow.ViewModel.VSyncModeSettingChanged();
@@ -910,6 +912,12 @@ namespace Ryujinx.Ava.UI.ViewModels
             SaveSettingsEvent?.Invoke();
 
             GameListNeedsRefresh = false;
+        }
+
+        public static void SaveConfiguration(ConfigurationState config, bool global)
+        {
+            ArgumentNullException.ThrowIfNull(config);
+            config.ToFileFormat().SaveConfig(global ? Program.GlobalConfigurationPath : Program.ConfigurationPath);
         }
 
         private static void RevertIfNotSaved(bool isCustomConfig = false, bool isGameRunning = false)

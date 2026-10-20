@@ -200,7 +200,7 @@ namespace Ryujinx.Headless
         [Option("disable-main-input-config", Required = false, Default = false, HelpText = "Do not use the input-related settings from what was configured via the UI.")]
         public bool DisableMainInputConfig { get; set; }
 
-        [Option("root-data-dir", Required = false, HelpText = "Set the custom folder path for Ryujinx data.")]
+        [Option('r', "root-data-dir", Required = false, HelpText = "Set the existing independent data directory for Ryubing Canary Local.")]
         public string BaseDataDir { get; set; }
 
         [Option("profile", Required = false, HelpText = "Set the user profile to launch the game with.")]
