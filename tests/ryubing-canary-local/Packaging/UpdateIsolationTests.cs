@@ -26,7 +26,7 @@ public class UpdateIsolationTests
             Assert.That(ReleaseInformation.IsCanaryBuild, Is.True);
             Assert.That(ReleaseInformation.Version, Is.EqualTo("1.3.351"));
             Assert.That(ReleaseInformation.SourceRevision, Is.EqualTo("475615f0431b4995b03c930c5089d20f6f3570e0"));
-            Assert.That(ReleaseInformation.LocalBuildMarker, Is.EqualTo("ryubing-canary-local+475615f.local1"));
+            Assert.That(ReleaseInformation.LocalBuildMarker, Is.EqualTo("ryubing-canary-local+475615f.local1.rumblefix1"));
             Assert.That(ReleaseInformation.ConfigName, Is.EqualTo("Config.json"));
             Assert.That(RyujinxApp.FullAppName, Is.EqualTo(RyubingCanaryLocalPolicy.DisplayName));
         });

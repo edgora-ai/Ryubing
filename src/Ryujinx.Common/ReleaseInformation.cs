@@ -14,7 +14,7 @@ namespace Ryujinx.Common
         private const string ReleaseChannelName = CanaryChannel;
         private const string ConfigFileName = "Config.json";
 
-        public const string LocalBuildMarker = "ryubing-canary-local+475615f.local1";
+        public const string LocalBuildMarker = "ryubing-canary-local+475615f.local1.rumblefix1";
         public static string SourceRevision => BuildGitHash;
 
         public static string ConfigName => !ConfigFileName.StartsWith("%%") ? ConfigFileName : "Config.json";

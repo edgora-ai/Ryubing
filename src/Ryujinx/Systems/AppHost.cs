@@ -956,6 +956,7 @@ namespace Ryujinx.Ava.Systems
         internal void Pause()
         {
             Device?.System.TogglePauseEmulation(true);
+            NpadManager.StopRumble();
 
             _viewModel.IsPaused = true;
             _playTimer.Stop();

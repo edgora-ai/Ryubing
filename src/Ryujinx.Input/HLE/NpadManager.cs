@@ -345,6 +345,7 @@ namespace Ryujinx.Input.HLE
 
                 if (_inputUpdateBlockCount == 0)
                 {
+                    StopRumbleCore();
                     ClearInputDriverStates();
                 }
             }
@@ -364,6 +365,24 @@ namespace Ryujinx.Input.HLE
             lock (_lock)
             {
                 _inputUpdateBlockCount++;
+                StopRumbleCore();
+            }
+        }
+
+        public void StopRumble()
+        {
+            lock (_lock)
+            {
+                StopRumbleCore();
+            }
+        }
+
+        private void StopRumbleCore()
+        {
+            foreach (InputConfig inputConfig in _inputConfig)
+            {
+                int index = (int)inputConfig.PlayerIndex;
+                _controllers[index]?.StopRumble(_device?.Hid.Npads.GetRumbleQueue((PlayerIndex)index));
             }
         }
 
@@ -406,7 +425,14 @@ namespace Ryujinx.Input.HLE
 
                         controller.UpdateUserConfiguration(inputConfig);
                         controller.Update();
-                        controller.UpdateRumble(_device.Hid.Npads.GetRumbleQueue(playerIndex));
+                        if (_device.System.IsPaused)
+                        {
+                            controller.StopRumble(_device.Hid.Npads.GetRumbleQueue(playerIndex));
+                        }
+                        else
+                        {
+                            controller.UpdateRumble(_device.Hid.Npads.GetRumbleQueue(playerIndex));
+                        }
 
                         inputState = controller.GetHLEInputState();
 
@@ -420,6 +446,8 @@ namespace Ryujinx.Input.HLE
                     }
                     else
                     {
+                        controller?.StopRumble(_device.Hid.Npads.GetRumbleQueue(playerIndex));
+
                         // Ensure that orientation isn't null
                         motionState.Item1.Orientation = new float[9];
                     }

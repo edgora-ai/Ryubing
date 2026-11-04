@@ -28,7 +28,7 @@ IDENTITY = {
 }
 VERSION = "1.3.351"
 SOURCE_REVISION = "475615f0431b4995b03c930c5089d20f6f3570e0"
-BUILD_MARKER = "ryubing-canary-local+475615f.local1"
+BUILD_MARKER = "ryubing-canary-local+475615f.local1.rumblefix1"
 ARM64 = 0x0100000C
 X64 = 0x01000007
 BUNDLE_SIGNATURE = hashlib.sha256(b".net core bundle\n").digest()

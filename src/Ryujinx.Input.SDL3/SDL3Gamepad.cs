@@ -170,15 +170,44 @@ namespace Ryujinx.Input.SDL3
 
         protected virtual void Dispose(bool disposing)
         {
-            if (disposing && _hdRumble != null)
+            if (!disposing)
             {
-                _hdRumble.Dispose();
+                return;
             }
-            if (disposing && _gamepadHandle != null)
-            {
-                SDL_CloseGamepad(_gamepadHandle);
 
-                _gamepadHandle = null;
+            try
+            {
+                // Closing a handle is not itself a reliable stop command on every backend.
+                if (_gamepadHandle != null)
+                {
+                    SDL_RumbleGamepad(_gamepadHandle, 0, 0, 0);
+                }
+            }
+            catch (Exception exception)
+            {
+                Logger.Debug?.Print(LogClass.Hid, $"Stopping controller rumble failed: {exception.Message}");
+            }
+            finally
+            {
+                try
+                {
+                    _hdRumble?.Dispose();
+                }
+                finally
+                {
+                    _hdRumble = null;
+                    try
+                    {
+                        if (_gamepadHandle != null)
+                        {
+                            SDL_CloseGamepad(_gamepadHandle);
+                        }
+                    }
+                    finally
+                    {
+                        _gamepadHandle = null;
+                    }
+                }
             }
         }
 
@@ -200,7 +229,7 @@ namespace Ryujinx.Input.SDL3
 
         public bool Rumble(float lowFrequency, float highFrequency, uint durationMs)
         {
-            if ((Features & GamepadFeaturesFlag.Rumble) == 0)
+            if (_gamepadHandle == null || (Features & GamepadFeaturesFlag.Rumble) == 0)
             {
                 return false;
             }
@@ -208,29 +237,22 @@ namespace Ryujinx.Input.SDL3
             ushort lowFrequencyRaw = (ushort)(lowFrequency * ushort.MaxValue);
             ushort highFrequencyRaw = (ushort)(highFrequency * ushort.MaxValue);
 
-            if (durationMs == uint.MaxValue)
-            {
-                if (!SDL_RumbleGamepad(_gamepadHandle, lowFrequencyRaw, highFrequencyRaw, SDL_HAPTIC_INFINITY))
-                    Logger.Error?.Print(LogClass.Hid, "Rumble is not supported on this game controller.");
-            }
-            else if (durationMs > SDL_HAPTIC_INFINITY)
+            if (durationMs != uint.MaxValue && durationMs > SDL_HAPTIC_INFINITY)
             {
                 Logger.Error?.Print(LogClass.Hid, $"Unsupported rumble duration {durationMs}");
-            }
-            else
-            {
-                if (!SDL_RumbleGamepad(_gamepadHandle, lowFrequencyRaw, highFrequencyRaw, durationMs))
-                    Logger.Error?.Print(LogClass.Hid, "Rumble is not supported on this game controller.");
-            }
-            
-            if (!String.IsNullOrEmpty(SDL_GetError()))
-            {
-                Logger.Error?.PrintMsg(LogClass.Hid, SDL_GetError());
-                SDL_ClearError();
                 return false;
             }
 
-            return true;
+            uint nativeDuration = durationMs == uint.MaxValue ? SDL_HAPTIC_INFINITY : durationMs;
+            bool result = SDL_RumbleGamepad(_gamepadHandle, lowFrequencyRaw, highFrequencyRaw, nativeDuration);
+            if (!result)
+            {
+                Logger.Error?.PrintMsg(LogClass.Hid, SDL_GetError());
+                SDL_ClearError();
+            }
+
+            // SDL's error string can be left over from an unrelated call, even on success.
+            return result;
         }
 
         public Vector3 GetMotionData(MotionInputId inputId)

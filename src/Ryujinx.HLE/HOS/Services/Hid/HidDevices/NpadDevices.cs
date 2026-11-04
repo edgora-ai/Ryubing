@@ -21,9 +21,9 @@ namespace Ryujinx.HLE.HOS.Services.Hid
         private ControllerType[] _configuredTypes;
         private readonly KEvent[] _styleSetUpdateEvents;
         private readonly bool[] _supportedPlayers;
-        private VibrationValue _neutralVibrationValue = new()
+        private static readonly VibrationValue _neutralVibrationValue = new()
         {
-            AmplitudeLow = 0.01f,
+            AmplitudeLow = 0f,
             FrequencyLow = 160f,
             AmplitudeHigh = 0f,
             FrequencyHigh = 320f,
@@ -626,17 +626,21 @@ namespace Ryujinx.HLE.HOS.Services.Hid
         {
             if (RumbleQueues.TryGetValue(index, out ConcurrentQueue<(VibrationValue, VibrationValue)> currentQueue))
             {
+                bool hasPreviousValue = LastVibrationValues.TryGetValue(index, out (VibrationValue, VibrationValue) dualVibrationValue);
+
+                // A single-device HID command changes only that Joy-Con. Do not invent
+                // a non-zero effect (or cancel the other side) when its value is absent.
                 if (!dualVibrationValues.TryGetValue(0, out VibrationValue leftVibrationValue))
                 {
-                    leftVibrationValue = _neutralVibrationValue;
+                    leftVibrationValue = hasPreviousValue ? dualVibrationValue.Item1 : _neutralVibrationValue;
                 }
 
                 if (!dualVibrationValues.TryGetValue(1, out VibrationValue rightVibrationValue))
                 {
-                    rightVibrationValue = _neutralVibrationValue;
+                    rightVibrationValue = hasPreviousValue ? dualVibrationValue.Item2 : _neutralVibrationValue;
                 }
 
-                if (!LastVibrationValues.TryGetValue(index, out (VibrationValue, VibrationValue) dualVibrationValue) || !leftVibrationValue.Equals(dualVibrationValue.Item1) || !rightVibrationValue.Equals(dualVibrationValue.Item2))
+                if (!hasPreviousValue || !leftVibrationValue.Equals(dualVibrationValue.Item1) || !rightVibrationValue.Equals(dualVibrationValue.Item2))
                 {
                     currentQueue.Enqueue((leftVibrationValue, rightVibrationValue));
 

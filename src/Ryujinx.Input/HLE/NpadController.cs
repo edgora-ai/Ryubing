@@ -246,6 +246,7 @@ namespace Ryujinx.Input.HLE
         public bool IsAvailable => _gamepad != null || _keyboardGamepad != null || _assignedControllerGamepads.Count > 0;
 
         private readonly CemuHookClient _cemuHookClient;
+        private readonly RumbleLifecycle _rumble = new();
         private static readonly InputConfigJsonSerializerContext _serializerContext = new(JsonHelper.GetDefaultSerializerOptions());
 
         private enum DynamicInputSource
@@ -339,6 +340,8 @@ namespace Ryujinx.Input.HLE
                     UpdateMotionInput(_controllerConfig.Motion);
                 }
 
+                UpdateActiveGamepad();
+
                 if (_keyboardConfig != null)
                 {
                     _keyboardGamepad?.SetConfiguration(_keyboardConfig);
@@ -356,7 +359,6 @@ namespace Ryujinx.Input.HLE
                     }
                 }
 
-                UpdateActiveGamepad();
                 return;
             }
 
@@ -383,6 +385,7 @@ namespace Ryujinx.Input.HLE
 
             _activeConfig = config;
 
+            UpdateRumbleConfiguration();
             _gamepad?.SetConfiguration(config);
         }
 
@@ -662,19 +665,26 @@ namespace Ryujinx.Input.HLE
 
         public void UpdateRumble(ConcurrentQueue<(VibrationValue, VibrationValue)> queue)
         {
-            if (queue.TryDequeue(out (VibrationValue, VibrationValue) dualVibrationValue))
-            {
-                if (_controllerConfig is StandardControllerInputConfig dynamicControllerConfig &&
-                    _playerInputAssignment?.EnableDynamicInputSwap == true &&
-                    dynamicControllerConfig.Rumble?.EnableRumble == true)
-                {
-                    ApplyRumble(_controllerGamepad ?? _assignedControllerGamepads.FirstOrDefault(), dynamicControllerConfig, dualVibrationValue);
-                }
-                else if (_config is StandardControllerInputConfig controllerConfig && controllerConfig.Rumble?.EnableRumble == true)
-                {
-                    ApplyRumble(_gamepad, controllerConfig, dualVibrationValue);
-                }
-            }
+            StandardControllerInputConfig controllerConfig = GetRumbleConfiguration();
+            _rumble.Update(_gamepad, controllerConfig?.Rumble, queue);
+        }
+
+        public void StopRumble(ConcurrentQueue<(VibrationValue, VibrationValue)> queue = null)
+        {
+            _rumble.Stop(queue);
+        }
+
+        private StandardControllerInputConfig GetRumbleConfiguration()
+        {
+            // Dynamic profiles belong to the actual active device, not the first
+            // assigned controller. A keyboard becoming active must stop the old pad.
+            return (_playerInputAssignment?.EnableDynamicInputSwap == true ? _activeConfig : _config)
+                as StandardControllerInputConfig;
+        }
+
+        private void UpdateRumbleConfiguration()
+        {
+            _rumble.Configure(_gamepad, GetRumbleConfiguration()?.Rumble);
         }
 
         public bool HasAssignedControllerId(string id)
@@ -690,41 +700,6 @@ namespace Ryujinx.Input.HLE
             }
 
             return Id == id;
-        }
-
-        private void ApplyRumble(IGamepad gamepad, StandardControllerInputConfig controllerConfig, (VibrationValue, VibrationValue) dualVibrationValue)
-        {
-            if (gamepad == null)
-            {
-                return;
-            }
-
-            VibrationValue leftVibrationValue = dualVibrationValue.Item1;
-            VibrationValue rightVibrationValue = dualVibrationValue.Item2;
-            
-            float low = Math.Min(1f, (float)((rightVibrationValue.AmplitudeLow * 0.85 + rightVibrationValue.AmplitudeHigh * 0.15) * controllerConfig.Rumble.StrongRumble));
-            float high = Math.Min(1f, (float)((leftVibrationValue.AmplitudeLow * 0.15 + leftVibrationValue.AmplitudeHigh * 0.85) * controllerConfig.Rumble.WeakRumble));
-
-            leftVibrationValue.AmplitudeLow *= controllerConfig.Rumble.WeakRumble;
-            leftVibrationValue.AmplitudeHigh *= controllerConfig.Rumble.StrongRumble;
-            rightVibrationValue.AmplitudeLow *= controllerConfig.Rumble.WeakRumble;
-            rightVibrationValue.AmplitudeHigh *= controllerConfig.Rumble.StrongRumble;
-
-            if (!controllerConfig.Rumble.UseHDRumble || !gamepad.HDRumble(leftVibrationValue, rightVibrationValue))
-            {
-                gamepad.Rumble(low, high, 0xFFFFFFFF);
-            }
-
-            Logger.Debug?.Print(LogClass.Hid, $"Effect for {controllerConfig.PlayerIndex} " +
-                // Value=value/multiplier * multiplier (result)
-                $"L.low.amp={leftVibrationValue.AmplitudeLow / controllerConfig.Rumble.WeakRumble} * {controllerConfig.Rumble.WeakRumble} ({leftVibrationValue.AmplitudeLow}), " +
-                $"L.high.amp={leftVibrationValue.AmplitudeHigh / controllerConfig.Rumble.WeakRumble} * {controllerConfig.Rumble.WeakRumble} ({leftVibrationValue.AmplitudeHigh}), " +
-                $"L.low.freq={leftVibrationValue.FrequencyLow / controllerConfig.Rumble.WeakRumble} * {controllerConfig.Rumble.WeakRumble} ({leftVibrationValue.FrequencyLow}), " +
-                $"L.high.freq={leftVibrationValue.FrequencyHigh / controllerConfig.Rumble.WeakRumble} * {controllerConfig.Rumble.WeakRumble} ({leftVibrationValue.FrequencyHigh}), " +
-                $"R.low.amp={rightVibrationValue.AmplitudeLow / controllerConfig.Rumble.StrongRumble} * {controllerConfig.Rumble.StrongRumble} ({rightVibrationValue.AmplitudeLow}), " +
-                $"R.high.amp={rightVibrationValue.AmplitudeHigh / controllerConfig.Rumble.StrongRumble} * {controllerConfig.Rumble.StrongRumble} ({rightVibrationValue.AmplitudeHigh}), " +
-                $"R.low.freq={rightVibrationValue.FrequencyLow / controllerConfig.Rumble.StrongRumble} * {controllerConfig.Rumble.StrongRumble} ({rightVibrationValue.FrequencyLow}), " +
-                $"R.high.freq={rightVibrationValue.FrequencyHigh / controllerConfig.Rumble.StrongRumble} * {controllerConfig.Rumble.StrongRumble} ({rightVibrationValue.FrequencyHigh})");
         }
 
         private void ConfigureDynamicGamepads(IGamepadDriver keyboardDriver, IGamepadDriver gamepadDriver, InputConfig config)
@@ -1098,6 +1073,7 @@ namespace Ryujinx.Input.HLE
             };
 
             _controllerGamepad = _gamepad;
+            UpdateRumbleConfiguration();
         }
 
         private void UpdateControllerMotion(IGamepad gamepad, StandardControllerInputConfig controllerConfig)
@@ -1215,6 +1191,8 @@ namespace Ryujinx.Input.HLE
 
         private void DisposeOpenedGamepads()
         {
+            StopRumble();
+
             if (!ReferenceEquals(_gamepad, _keyboardGamepad) && !_assignedControllerGamepads.Contains(_gamepad))
             {
                 _gamepad?.Dispose();

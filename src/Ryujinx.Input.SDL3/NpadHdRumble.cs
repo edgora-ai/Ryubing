@@ -19,6 +19,8 @@ namespace Ryujinx.Input.SDL3
         
         private int _globalCount;
         private ulong _lastWriteTicks;
+        private bool _hasRumbled;
+        private bool _disposed;
 
         private NpadHdRumble(SDL_hid_device* hidHandle)
         {
@@ -51,7 +53,7 @@ namespace Ryujinx.Input.SDL3
         }
 
         // Some of the code was translated from https://github.com/MIZUSHIKI/JoyShockLibrary-plus-HDRumble
-        private bool WriteNintendoHdRumble(VibrationValue left, VibrationValue right)
+        private bool WriteNintendoHdRumble(VibrationValue left, VibrationValue right, bool force = false)
         {
             int leftLowAmp = EncodeLowAmp(left.AmplitudeLow);
             int leftLowFreq = EncodeLowFreq(left.FrequencyLow) + (leftLowAmp >> 8);
@@ -85,7 +87,7 @@ namespace Ryujinx.Input.SDL3
             
             fixed (byte* ptr = _buffer)
             {
-                if (SendHdRumble(ptr, (nuint)_buffer.Length) >= 0)
+                if (SendHdRumble(ptr, (nuint)_buffer.Length, force) >= 0)
                 {
                     return true;
                 }
@@ -151,25 +153,34 @@ namespace Ryujinx.Input.SDL3
 
         public bool HdRumble(VibrationValue left, VibrationValue right)
         {
+            if (_disposed || _hidHandle == null || _buffer == null)
+            {
+                return false;
+            }
+
             if(_product is (ushort) HDRumbleSupportedProduct.ProController
                or (ushort) HDRumbleSupportedProduct.JoyconLeft
                or (ushort) HDRumbleSupportedProduct.JoyconRight
                or (ushort) HDRumbleSupportedProduct.JoyconPair
                or (ushort) HDRumbleSupportedProduct.JoyconGrip)
             {
-                return WriteNintendoHdRumble(left, right);
+                bool isStop = left.AmplitudeLow == 0 && left.AmplitudeHigh == 0 &&
+                              right.AmplitudeLow == 0 && right.AmplitudeHigh == 0;
+                bool result = WriteNintendoHdRumble(left, right, force: isStop);
+                _hasRumbled |= result;
+                return result;
             }
 
             return false;
         }
 
-        private int SendHdRumble(byte* data, nuint length)
+        private int SendHdRumble(byte* data, nuint length, bool force)
         {
             int result = 0;
             ulong currentTicks = SDL_GetTicks();
 
             // Ditch rumble if we haven't hit the poll-rate yet.
-            if ((currentTicks - _lastWriteTicks) <= GetPollRate())
+            if (!force && (currentTicks - _lastWriteTicks) <= GetPollRate())
             {
                 return result;
             }
@@ -245,8 +256,34 @@ namespace Ryujinx.Input.SDL3
 
         public void Dispose()
         {
-            GC.SuppressFinalize(this);
-            SDL_hid_close(_hidHandle);
+            if (_disposed)
+            {
+                return;
+            }
+
+            _disposed = true;
+            try
+            {
+                if (_hasRumbled && _hidHandle != null && _buffer != null)
+                {
+                    // Keep legal carrier frequencies while removing both amplitudes.
+                    // A stop must not be dropped by the normal HD report-rate limit.
+                    VibrationValue stop = new() { FrequencyLow = 160f, FrequencyHigh = 320f };
+                    WriteNintendoHdRumble(stop, stop, force: true);
+                }
+            }
+            catch (Exception exception)
+            {
+                Logger.Debug?.Print(LogClass.Hid, $"Stopping HD rumble failed: {exception.Message}");
+            }
+            finally
+            {
+                GC.SuppressFinalize(this);
+                if (_hidHandle != null)
+                {
+                    SDL_hid_close(_hidHandle);
+                }
+            }
         }
     }
 

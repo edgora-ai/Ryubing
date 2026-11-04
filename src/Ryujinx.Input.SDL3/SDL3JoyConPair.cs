@@ -1,9 +1,6 @@
-using Gommon;
 using Ryujinx.Common.Configuration.Hid;
-using Ryujinx.Common.Logging;
 using Ryujinx.HLE.HOS.Services.Hid;
 using System.Collections.Generic;
-using System.Linq;
 using System.Numerics;
 using SDL;
 using static SDL.SDL3;
@@ -23,8 +20,14 @@ namespace Ryujinx.Input.SDL3
 
         public void Dispose()
         {
-            left?.Dispose();
-            right?.Dispose();
+            try
+            {
+                left?.Dispose();
+            }
+            finally
+            {
+                right?.Dispose();
+            }
         }
 
         public GamepadStateSnapshot GetMappedStateSnapshot()
@@ -73,30 +76,21 @@ namespace Ryujinx.Input.SDL3
 
         public bool Rumble(float lowFrequency, float highFrequency, uint durationMs)
         {
-            if (lowFrequency != 0)
+            // Both devices must receive every update, including a zero on just one side.
+            // Otherwise that side retains its previous (potentially indefinite) effect.
+            bool leftResult;
+            bool rightResult = false;
+            try
             {
-                right.Rumble(lowFrequency, lowFrequency, durationMs);
+                leftResult = left?.Rumble(highFrequency, highFrequency, durationMs) ?? false;
+            }
+            finally
+            {
+                // Do not short-circuit or strand the other side if one device fails.
+                rightResult = right?.Rumble(lowFrequency, lowFrequency, durationMs) ?? false;
             }
 
-            if (highFrequency != 0)
-            {
-                left.Rumble(highFrequency, highFrequency, durationMs);
-            }
-
-            if (lowFrequency == 0 && highFrequency == 0)
-            {
-                left.Rumble(0, 0, durationMs);
-                right.Rumble(0, 0, durationMs);
-            }
-
-            if (!SDL_GetError().IsNullOrEmpty())
-            {
-                Logger.Error?.PrintMsg(LogClass.Hid, SDL_GetError());
-                SDL_ClearError();
-                return false;
-            }
-
-            return true;
+            return leftResult && rightResult;
         }
 
         public void SetConfiguration(InputConfig configuration)
