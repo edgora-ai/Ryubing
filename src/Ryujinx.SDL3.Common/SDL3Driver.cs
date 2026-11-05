@@ -209,7 +209,17 @@ namespace Ryujinx.SDL3.Common
                 {
                     int generation = Volatile.Read(ref _generation);
 
-                    dispatcher(() => PollEvents(generation));
+                    try
+                    {
+                        dispatcher(() => PollEvents(generation));
+                    }
+                    catch (Exception ex)
+                    {
+                        // Do not let a failed dispatch stop future polls permanently.
+                        Interlocked.Exchange(ref _pollDispatchPending, 0);
+
+                        Logger.Warning?.Print(LogClass.Application, $"SDL event dispatch failed: {ex.Message}");
+                    }
                 }
 
                 waitHandle.Wait(WaitTimeMs);

@@ -68,5 +68,40 @@ namespace Ryubing.Canary.Local.Tests
 
             Assert.That(timedOut, Is.False, "A waiter must complete when the syncpoint reaches the threshold.");
         }
+
+        [Test]
+        public void SyncpointIncrement_FiresReachedWaitersAndKeepsPendingOnes()
+        {
+            SynchronizationManager manager = new();
+            const uint id = 11;
+
+            int reached = 0;
+            int pending = 0;
+
+            manager.RegisterCallbackOnSyncpoint(id, 1, _ => reached++);
+            manager.RegisterCallbackOnSyncpoint(id, 2, _ => reached++);
+            manager.RegisterCallbackOnSyncpoint(id, 100, _ => pending++);
+
+            manager.IncrementSyncpoint(id);
+
+            Assert.That(reached, Is.EqualTo(1), "Only the waiter whose threshold was reached must fire.");
+            Assert.That(pending, Is.EqualTo(0));
+
+            manager.IncrementSyncpoint(id);
+
+            Assert.That(reached, Is.EqualTo(2));
+            Assert.That(pending, Is.EqualTo(0));
+
+            for (int i = 0; i < 98; i++)
+            {
+                manager.IncrementSyncpoint(id);
+            }
+
+            Assert.That(pending, Is.EqualTo(1), "A pending waiter must survive compaction and fire once at its threshold.");
+
+            manager.IncrementSyncpoint(id);
+
+            Assert.That(pending, Is.EqualTo(1), "An expired waiter must not fire twice.");
+        }
     }
 }

@@ -80,11 +80,16 @@ namespace Ryujinx.Graphics.Gpu.Synchronization
 
             lock (_waiters)
             {
-                _waiters.RemoveAll(item =>
-                {
-                    bool isPastThreshold = currentValue >= item.Threshold;
+                // Compact the list in place instead of using RemoveAll: this runs on the GPU
+                // submission path, and RemoveAll with a captured threshold allocates a
+                // delegate on every increment even when there is nothing to remove.
+                int writeIndex = 0;
 
-                    if (isPastThreshold)
+                for (int readIndex = 0; readIndex < _waiters.Count; readIndex++)
+                {
+                    SyncpointWaiterHandle item = _waiters[readIndex];
+
+                    if (currentValue >= item.Threshold)
                     {
                         if (expired == null)
                         {
@@ -97,9 +102,16 @@ namespace Ryujinx.Graphics.Gpu.Synchronization
                             expiredList.Add(item);
                         }
                     }
+                    else
+                    {
+                        _waiters[writeIndex++] = item;
+                    }
+                }
 
-                    return isPastThreshold;
-                });
+                if (writeIndex < _waiters.Count)
+                {
+                    _waiters.RemoveRange(writeIndex, _waiters.Count - writeIndex);
+                }
             }
 
             // Call the callbacks as a separate step.

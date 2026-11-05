@@ -240,10 +240,11 @@ namespace Ryujinx.Ava
 
                 // macOS used to ignore UseHardwareAcceleration entirely, so --software-gui did
                 // not actually change the native window rendering backend on this platform.
+                // Keep the upstream Avalonia default order when hardware acceleration is on.
                 .With(new AvaloniaNativePlatformOptions
                 {
                     RenderingMode = UseHardwareAcceleration
-                        ? [AvaloniaNativeRenderingMode.OpenGl, AvaloniaNativeRenderingMode.Metal, AvaloniaNativeRenderingMode.Software]
+                        ? [AvaloniaNativeRenderingMode.OpenGl, AvaloniaNativeRenderingMode.Software]
                         : [AvaloniaNativeRenderingMode.Software]
                 });
 

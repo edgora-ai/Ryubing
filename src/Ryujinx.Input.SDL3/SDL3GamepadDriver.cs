@@ -283,7 +283,17 @@ namespace Ryujinx.Input.SDL3
         }
 
         public SDL_JoystickID GetInstanceIdFromId(string id) {
-            return _gamepadsInstanceIdsMapping.Where(e => e.Value == id).FirstOrDefault().Key;
+            // Called for every device lookup (including per-frame controller queries);
+            // avoid the LINQ closure allocation of Where(...).FirstOrDefault().
+            foreach (KeyValuePair<SDL_JoystickID, string> entry in _gamepadsInstanceIdsMapping)
+            {
+                if (entry.Value == id)
+                {
+                    return entry.Key;
+                }
+            }
+
+            return default;
         }
 
         public IGamepad GetGamepad(string id)
