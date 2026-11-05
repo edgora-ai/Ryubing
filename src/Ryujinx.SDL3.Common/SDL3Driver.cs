@@ -32,6 +32,8 @@ namespace Ryujinx.SDL3.Common
         private bool _isRunning;
         private uint _refereceCount;
         private Thread _worker;
+        private int _generation;
+        private int _pollDispatchPending;
 
         public event Action<SDL_JoystickID> OnJoyStickConnected;
         public event Action<SDL_JoystickID> OnJoystickDisconnected;
@@ -199,16 +201,42 @@ namespace Ryujinx.SDL3.Common
 
             while (_isRunning)
             {
-                MainThreadDispatcher?.Invoke(() =>
+                Action<Action> dispatcher = MainThreadDispatcher;
+
+                // Allow at most one queued poll request: a blocked UI thread must not be able
+                // to accumulate an unbounded number of pending callbacks.
+                if (dispatcher != null && Interlocked.CompareExchange(ref _pollDispatchPending, 1, 0) == 0)
                 {
-                    SDL_Event evnt = new();
-                    while (SDL_PollEvent(&evnt))
-                    {
-                        HandleSDLEvent(ref evnt);
-                    }
-                });
+                    int generation = Volatile.Read(ref _generation);
+
+                    dispatcher(() => PollEvents(generation));
+                }
 
                 waitHandle.Wait(WaitTimeMs);
+            }
+        }
+
+        private unsafe void PollEvents(int generation)
+        {
+            try
+            {
+                // Drop the callback if the driver was disposed (or re-initialised) while the
+                // callback was still waiting on the UI thread. SDL must not be polled after quit.
+                if (generation != Volatile.Read(ref _generation) || !_isRunning)
+                {
+                    return;
+                }
+
+                SDL_Event evnt = new();
+
+                while (SDL_PollEvent(&evnt))
+                {
+                    HandleSDLEvent(ref evnt);
+                }
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _pollDispatchPending, 0);
             }
         }
 
@@ -230,6 +258,9 @@ namespace Ryujinx.SDL3.Common
                         _isRunning = false;
 
                         _worker?.Join();
+
+                        // Invalidate poll callbacks that are still queued on the UI thread.
+                        Interlocked.Increment(ref _generation);
 
                         SDL_Quit();
 

@@ -2,6 +2,7 @@ using Ryujinx.Common.Logging;
 using Ryujinx.Graphics.Device;
 using System;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace Ryujinx.Graphics.Gpu.Synchronization
 {
@@ -86,15 +87,19 @@ namespace Ryujinx.Graphics.Gpu.Synchronization
                 timeout = TimeSpan.FromSeconds(1);
             }
 
-            using ManualResetEvent waitEvent = new(false);
-            SyncpointWaiterHandle info = _syncpoints[id].RegisterCallback(threshold, _ => waitEvent.Set());
+            // The callback may still run after a timeout: Syncpoint.Increment removes the waiter
+            // from its list while holding the lock, but invokes callbacks after releasing it.
+            // A TaskCompletionSource avoids the disposed-wait-handle race that a ManualResetEvent
+            // would have in that window (ObjectDisposedException on the incrementing thread).
+            TaskCompletionSource<bool> waitEvent = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            SyncpointWaiterHandle info = _syncpoints[id].RegisterCallback(threshold, _ => waitEvent.TrySetResult(true));
 
             if (info == null)
             {
                 return false;
             }
 
-            bool signaled = waitEvent.WaitOne(timeout);
+            bool signaled = waitEvent.Task.Wait(timeout);
 
             if (!signaled)
             {

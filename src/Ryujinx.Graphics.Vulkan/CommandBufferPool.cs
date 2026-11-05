@@ -270,12 +270,29 @@ namespace Ryujinx.Graphics.Vulkan
             Return(cbs, null, null, null);
         }
 
-        public unsafe void Return(
+        public void Return(
             CommandBufferScoped cbs,
             ReadOnlySpan<Semaphore> waitSemaphores,
             ReadOnlySpan<PipelineStageFlags> waitDstStageMask,
             ReadOnlySpan<Semaphore> signalSemaphores)
         {
+            Return(cbs, waitSemaphores, waitDstStageMask, signalSemaphores, out _);
+        }
+
+        /// <summary>
+        /// Submits the command buffer and, when requested, returns the fence signalled by that
+        /// submission. The caller owns an extra reference to it and must release it with
+        /// <see cref="FenceHolder.Put"/> once the submission has been waited on.
+        /// </summary>
+        public unsafe void Return(
+            CommandBufferScoped cbs,
+            ReadOnlySpan<Semaphore> waitSemaphores,
+            ReadOnlySpan<PipelineStageFlags> waitDstStageMask,
+            ReadOnlySpan<Semaphore> signalSemaphores,
+            out FenceHolder submissionFence)
+        {
+            submissionFence = null;
+
             lock (_commandBuffers)
             {
                 int cbIndex = cbs.CommandBufferIndex;
@@ -319,6 +336,10 @@ namespace Ryujinx.Graphics.Vulkan
                 int ptr = (_queuedIndexesPtr + _queuedCount) % _totalCommandBuffers;
                 _queuedIndexes[ptr] = cbIndex;
                 _queuedCount++;
+
+                // Hand out an extra reference so the caller can wait on this submission later.
+                submissionFence = entry.Fence;
+                submissionFence?.Get();
             }
         }
 

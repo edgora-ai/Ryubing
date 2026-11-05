@@ -304,6 +304,18 @@ namespace Ryujinx.Input.SDL3
 
                     if (leftGamepadHandle == null || rightGamepadHandle == null)
                     {
+                        // Closing only drops the reference; it must not leave a half-opened pair
+                        // behind when only one side could be opened.
+                        if (leftGamepadHandle != null)
+                        {
+                            SDL_CloseGamepad(leftGamepadHandle);
+                        }
+
+                        if (rightGamepadHandle != null)
+                        {
+                            SDL_CloseGamepad(rightGamepadHandle);
+                        }
+
                         return null;
                     }
 
@@ -353,6 +365,56 @@ namespace Ryujinx.Input.SDL3
                 {
                     yield return GetGamepad(gamepad.Value);
                 }
+            }
+        }
+
+        /// <summary>
+        /// Clears the LED of every connected gamepad without creating gamepad wrappers.
+        /// A wrapper would also open HD rumble and motion sensor resources, and disposing it
+        /// would send a stop-rumble command to the shared underlying device.
+        /// </summary>
+        public unsafe void ClearAllGamepadLeds()
+        {
+            lock (_lock)
+            {
+                ClearLeds(_gamepadsIds);
+                ClearLeds(_joyConsIds);
+                ClearLeds(_linkedJoyConsIds);
+            }
+
+            unsafe void ClearLeds(Dictionary<SDL_JoystickID, string> ids)
+            {
+                foreach (string id in ids.Values)
+                {
+                    // A paired Joy-Con id is the combined ids of both halves.
+                    if (id.Contains('_'))
+                    {
+                        string[] parts = id.Split('_');
+
+                        if (parts.Length >= 2)
+                        {
+                            ClearLed(parts[0]);
+                            ClearLed(parts[1]);
+                        }
+                    }
+                    else
+                    {
+                        ClearLed(id);
+                    }
+                }
+            }
+
+            unsafe void ClearLed(string id)
+            {
+                SDL_Gamepad* handle = SDL_OpenGamepad(GetInstanceIdFromId(id));
+
+                if (handle == null)
+                {
+                    return;
+                }
+
+                SDL_SetGamepadLED(handle, 0, 0, 0);
+                SDL_CloseGamepad(handle);
             }
         }
     }

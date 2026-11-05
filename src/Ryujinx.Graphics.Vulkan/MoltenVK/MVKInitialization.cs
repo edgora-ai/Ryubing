@@ -1,3 +1,4 @@
+using Ryujinx.Common.Logging;
 using Silk.NET.Core.Loader;
 using Silk.NET.Vulkan;
 using System;
@@ -21,7 +22,13 @@ namespace Ryujinx.Graphics.Vulkan.MoltenVK
         {
             nint configSize = (nint)Marshal.SizeOf<MVKConfiguration>();
 
-            vkGetMoltenVKConfigurationMVK(nint.Zero, out MVKConfiguration config, configSize);
+            Result getResult = vkGetMoltenVKConfigurationMVK(nint.Zero, out MVKConfiguration config, configSize);
+
+            if (getResult != Result.Success)
+            {
+                Logger.Warning?.Print(LogClass.Gpu, $"[MoltenVK] vkGetMoltenVKConfigurationMVK failed with {getResult}; keeping the default configuration.");
+                return;
+            }
 
             config.UseMetalArgumentBuffers = true;
 
@@ -30,7 +37,12 @@ namespace Ryujinx.Graphics.Vulkan.MoltenVK
 
             config.ResumeLostDevice = true;
 
-            vkSetMoltenVKConfigurationMVK(nint.Zero, config, configSize);
+            Result setResult = vkSetMoltenVKConfigurationMVK(nint.Zero, config, configSize);
+
+            if (setResult != Result.Success)
+            {
+                Logger.Warning?.Print(LogClass.Gpu, $"[MoltenVK] vkSetMoltenVKConfigurationMVK failed with {setResult}; configuration was not applied.");
+            }
         }
 
         private static string[] Resolver(string path)

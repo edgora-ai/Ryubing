@@ -5,6 +5,7 @@ using Ryujinx.Ava.Systems.Configuration;
 using Ryujinx.Ava.UI.ViewModels;
 using Ryujinx.HLE.FileSystem;
 using Ryujinx.Input;
+using Ryujinx.Input.SDL3;
 using System;
 using System.Linq;
 
@@ -115,9 +116,11 @@ namespace Ryujinx.Ava.UI.Windows
         {
             HotkeysPage.Dispose();
 
-            foreach (IGamepad gamepad in RyujinxApp.MainWindow.InputManager.GamepadDriver.GetGamepads())
+            if (RyujinxApp.MainWindow.InputManager.GamepadDriver is SDL3GamepadDriver sdlGamepadDriver)
             {
-                gamepad?.ClearLed();
+                // LED-only path: opening gamepad wrappers here would start rumble/sensor
+                // resources for every connected controller.
+                sdlGamepadDriver.ClearAllGamepadLeds();
             }
 
             InputPage.Dispose();

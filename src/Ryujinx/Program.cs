@@ -236,6 +236,15 @@ namespace Ryujinx.Ava
                     RenderingMode = UseHardwareAcceleration
                         ? [Win32RenderingMode.AngleEgl, Win32RenderingMode.Software]
                         : [Win32RenderingMode.Software]
+                })
+
+                // macOS used to ignore UseHardwareAcceleration entirely, so --software-gui did
+                // not actually change the native window rendering backend on this platform.
+                .With(new AvaloniaNativePlatformOptions
+                {
+                    RenderingMode = UseHardwareAcceleration
+                        ? [AvaloniaNativeRenderingMode.OpenGl, AvaloniaNativeRenderingMode.Metal, AvaloniaNativeRenderingMode.Software]
+                        : [AvaloniaNativeRenderingMode.Software]
                 });
 
         private static bool ConsumeCommandLineArgument(ref string[] args, string targetArgument)

@@ -9,6 +9,7 @@ using Ryujinx.Ava.UI.Helpers;
 using Ryujinx.Ava.UI.ViewModels.Input;
 using Ryujinx.Common.Configuration.Hid.Controller;
 using Ryujinx.Input;
+using Ryujinx.Input.SDL3;
 using Ryujinx.Input.Assigner;
 using Button = Ryujinx.Input.Button;
 using StickInputId = Ryujinx.Common.Configuration.Hid.Controller.StickInputId;
@@ -243,9 +244,11 @@ namespace Ryujinx.Ava.UI.Views.Input
         {
             base.OnDetachedFromVisualTree(e);
 
-            foreach (IGamepad gamepad in RyujinxApp.MainWindow.InputManager.GamepadDriver.GetGamepads())
+            if (RyujinxApp.MainWindow.InputManager.GamepadDriver is SDL3GamepadDriver sdlGamepadDriver)
             {
-                gamepad?.ClearLed();
+                // LED-only path: opening gamepad wrappers here would start rumble/sensor
+                // resources for every connected controller.
+                sdlGamepadDriver.ClearAllGamepadLeds();
             }
 
             _currentAssigner?.Cancel();

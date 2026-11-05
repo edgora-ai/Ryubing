@@ -26,6 +26,10 @@ namespace Ryujinx.Graphics.Vulkan
         private Semaphore[] _imageAvailableSemaphores;
         private Semaphore[] _renderFinishedSemaphores;
 
+        // Fence of the submission that used each frame slot's acquire semaphore.
+        // Reusing a binary semaphore is only valid after the previous wait on it completed.
+        private FenceHolder[] _frameSubmitFences;
+
         private int _frameIndex;
 
         private int _width;
@@ -64,8 +68,23 @@ namespace Ryujinx.Graphics.Vulkan
             }
 
             // Destroy old Swapchain.
+            // vkDeviceWaitIdle requires external synchronization of every queue in the device,
+            // so hold both queue locks to keep any background submission out while idling.
 
-            _gd.Api.DeviceWaitIdle(_device);
+            lock (_gd.QueueLock)
+            {
+                lock (_gd.BackgroundQueueLock)
+                {
+                    _gd.Api.DeviceWaitIdle(_device);
+                }
+            }
+
+            // The device is idle, so every captured submission fence is signalled now.
+            for (int i = 0; i < _frameSubmitFences.Length; i++)
+            {
+                _frameSubmitFences[i]?.Put();
+                _frameSubmitFences[i] = null;
+            }
 
             unsafe
             {
@@ -197,6 +216,8 @@ namespace Ryujinx.Graphics.Vulkan
             {
                 _gd.Api.CreateSemaphore(_device, in semaphoreCreateInfo, null, out _renderFinishedSemaphores[i]).ThrowOnError();
             }
+
+            _frameSubmitFences = new FenceHolder[imageCount];
         }
 
         private unsafe TextureView CreateSwapchainImageView(Image swapchainImage, VkFormat format, TextureCreateInfo info)
@@ -309,20 +330,42 @@ namespace Ryujinx.Graphics.Vulkan
             return new Extent2D(width, height);
         }
 
+        /// <summary>
+        /// Waits for the submission that previously used a frame slot and releases its fence.
+        /// </summary>
+        private void WaitFrameSubmission(int frameIndex)
+        {
+            FenceHolder submissionFence = _frameSubmitFences[frameIndex];
+
+            if (submissionFence == null)
+            {
+                return;
+            }
+
+            submissionFence.Wait();
+            submissionFence.Put();
+
+            _frameSubmitFences[frameIndex] = null;
+        }
+
         public unsafe override void Present(ITexture texture, ImageCrop crop, Action swapBuffersCallback)
         {
             _gd.PipelineInternal.AutoFlush.Present();
 
             uint nextImage = 0;
-            int semaphoreIndex = _frameIndex++ % _imageAvailableSemaphores.Length;
+            int frameIndex = _frameIndex++ % _imageAvailableSemaphores.Length;
 
             while (true)
             {
+                // The acquire semaphore of this frame slot is binary: it must not be signalled
+                // again until the submission that waited on it has completed.
+                WaitFrameSubmission(frameIndex);
+
                 Result acquireResult = _gd.SwapchainApi.AcquireNextImage(
                     _device,
                     _swapchain,
                     ulong.MaxValue,
-                    _imageAvailableSemaphores[semaphoreIndex],
+                    _imageAvailableSemaphores[frameIndex],
                     new Fence(),
                     ref nextImage);
 
@@ -331,7 +374,7 @@ namespace Ryujinx.Graphics.Vulkan
                     _swapchainIsDirty)
                 {
                     RecreateSwapchain();
-                    semaphoreIndex = (_frameIndex - 1) % _imageAvailableSemaphores.Length;
+                    frameIndex = (_frameIndex - 1) % _imageAvailableSemaphores.Length;
                 }
                 else
                 {
@@ -457,14 +500,18 @@ namespace Ryujinx.Graphics.Vulkan
 
             _gd.FlushAllCommands();
 
+            // renderFinished is indexed by the acquired image, not by the frame slot: the
+            // presentation engine only releases that image once it consumed the wait, so the
+            // semaphore cannot be reused while it is still pending on the presentation queue.
             _gd.CommandBufferPool.Return(
                 cbs,
-                [_imageAvailableSemaphores[semaphoreIndex]],
+                [_imageAvailableSemaphores[frameIndex]],
                 [PipelineStageFlags.ColorAttachmentOutputBit],
-                [_renderFinishedSemaphores[semaphoreIndex]]);
+                [_renderFinishedSemaphores[nextImage]],
+                out _frameSubmitFences[frameIndex]);
 
             // TODO: Present queue.
-            Semaphore semaphore = _renderFinishedSemaphores[semaphoreIndex];
+            Semaphore semaphore = _renderFinishedSemaphores[nextImage];
             SwapchainKHR swapchain = _swapchain;
 
             Result result;
@@ -652,6 +699,12 @@ namespace Ryujinx.Graphics.Vulkan
             {
                 unsafe
                 {
+                    for (int i = 0; i < _frameSubmitFences.Length; i++)
+                    {
+                        // Release our extra reference; the pool keeps its own until it waits.
+                        _frameSubmitFences[i]?.Put();
+                    }
+
                     for (int i = 0; i < _swapchainImageViews.Length; i++)
                     {
                         _swapchainImageViews[i].Dispose();

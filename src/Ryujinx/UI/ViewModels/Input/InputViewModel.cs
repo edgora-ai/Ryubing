@@ -20,6 +20,7 @@ using Ryujinx.Common.Logging;
 using Ryujinx.Common.Utilities;
 using Ryujinx.Input;
 using Ryujinx.Input.SDL3;
+using static SDL.SDL3;
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
@@ -1915,12 +1916,15 @@ namespace Ryujinx.Ava.UI.ViewModels.Input
 
                 try
                 {
-                    IGamepad gp = _mainWindow?.InputManager?.GamepadDriver?.GetGamepad(id);
-
-                    if (gp is SDL3Gamepad sdlGp)
+                    // Query the vendor by device id instead of opening a gamepad handle:
+                    // opening a handle also starts HD rumble and motion sensor resources,
+                    // and this only needs a read-only metadata check.
+                    if (_mainWindow?.InputManager?.GamepadDriver is SDL3GamepadDriver sdlDriver)
                     {
+                        var instanceId = sdlDriver.GetInstanceIdFromId(id);
+
                         // Nintendo vendor ID is 0x057E
-                        isNintendoStyle = sdlGp.VendorId == 0x057E;
+                        isNintendoStyle = SDL_GetGamepadVendorForID(instanceId) == 0x057E;
                     }
                     else
                     {
