@@ -1361,6 +1361,14 @@ namespace Ryujinx.Ava.UI.ViewModels
         {
             RendererHostControl.WindowCreated += RendererHost_Created;
 
+            // The window may have been created before this thread subscribed (the renderer
+            // host is created on the UI thread while this thread is still starting), in which
+            // case the event was missed and waiting below would never complete.
+            if (RendererHostControl.IsWindowCreated)
+            {
+                _rendererWaitEvent.Set();
+            }
+
             AppHost.StatusUpdatedEvent += Update_StatusBar;
             AppHost.AppExit += AppHost_AppExit;
 

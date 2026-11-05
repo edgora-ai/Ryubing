@@ -11,6 +11,12 @@ namespace Ryujinx.Ava.UI.Renderer
     {
         public readonly EmbeddedWindow EmbeddedWindow;
 
+        // The window creation event is raised from a worker thread and may fire before the
+        // game thread subscribes to WindowCreated; keep a latch so that wait cannot miss it.
+        private volatile bool _windowCreated;
+
+        public bool IsWindowCreated => _windowCreated;
+
         public event EventHandler<EventArgs> WindowCreated;
         public event Action<object, Size> BoundsChanged;
 
@@ -70,6 +76,8 @@ namespace Ryujinx.Ava.UI.Renderer
 
         private void CurrentWindow_WindowCreated(object sender, nint e)
         {
+            _windowCreated = true;
+
             WindowCreated?.Invoke(this, EventArgs.Empty);
         }
     }
